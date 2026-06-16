@@ -1,0 +1,89 @@
+/* Neurogate design tokens — shim so standalone mockups render outside the chat host.
+   Mirrors the CSS variables the visualization host provides. Light + dark. */
+
+:root {
+  --color-background-primary: #ffffff;
+  --color-background-secondary: #f5f4ef;
+  --color-background-tertiary: #ebe9e2;
+  --color-background-info: #E6F1FB;
+  --color-background-success: #E1F5EE;
+  --color-background-warning: #FAEEDA;
+  --color-background-danger: #FCEBEB;
+
+  --color-text-primary: #1a1a18;
+  --color-text-secondary: #5F5E5A;
+  --color-text-tertiary: #888780;
+  --color-text-info: #185FA5;
+  --color-text-success: #0F6E56;
+  --color-text-warning: #854F0B;
+  --color-text-danger: #A32D2D;
+
+  --color-border-tertiary: rgba(0,0,0,0.12);
+  --color-border-secondary: rgba(0,0,0,0.22);
+  --color-border-primary: rgba(0,0,0,0.30);
+  --color-border-info: #378ADD;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-serif: ui-serif, Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+
+  --border-radius-md: 8px;
+  --border-radius-lg: 12px;
+  --border-radius-xl: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-background-primary: #1e1e1c;
+    --color-background-secondary: #161614;
+    --color-background-tertiary: #2a2a27;
+    --color-background-info: #0C447C;
+    --color-background-success: #085041;
+    --color-background-warning: #633806;
+    --color-background-danger: #791F1F;
+
+    --color-text-primary: #f2f1ec;
+    --color-text-secondary: #B4B2A9;
+    --color-text-tertiary: #888780;
+    --color-text-info: #B5D4F4;
+    --color-text-success: #9FE1CB;
+    --color-text-warning: #FAC775;
+    --color-text-danger: #F7C1C1;
+
+    --color-border-tertiary: rgba(255,255,255,0.14);
+    --color-border-secondary: rgba(255,255,255,0.26);
+    --color-border-primary: rgba(255,255,255,0.34);
+    --color-border-info: #378ADD;
+  }
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-text-primary);
+  background: var(--color-background-tertiary);
+  line-height: 1.6;
+  margin: 0;
+  padding: 24px;
+}
+
+.canvas { max-width: 720px; margin: 0 auto; }
+
+/* Pre-styled form controls (the chat host styles these automatically). */
+input[type="text"], select, textarea {
+  height: 36px; padding: 0 10px; font-size: 14px; font-family: var(--font-sans);
+  color: var(--color-text-primary); background: var(--color-background-primary);
+  border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md);
+  box-sizing: border-box; outline: none;
+}
+textarea { height: auto; padding: 8px 10px; line-height: 1.5; }
+input[type="text"]:focus, select:focus, textarea:focus { box-shadow: 0 0 0 2px var(--color-border-info); }
+label { display: block; margin-bottom: 4px; }
+
+button {
+  font-family: var(--font-sans); font-size: 14px; padding: 7px 12px;
+  background: transparent; color: var(--color-text-primary);
+  border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md);
+  cursor: pointer; transition: background .12s, transform .06s;
+}
+button:hover { background: var(--color-background-secondary); }
+button:active { transform: scale(0.98); }

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neurogate — топология команды</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css">
+<style>
+.c-purple{fill:#7F77DD;} .c-teal{fill:#1D9E75;} .c-coral{fill:#D85A30;} .c-gray{fill:#888780;}
+@media (prefers-color-scheme: dark){.c-purple{fill:#534AB7;}.c-teal{fill:#0F6E56;}.c-coral{fill:#993C1D;}.c-gray{fill:#5F5E5A;}}
+</style>
+</head>
+<body>
+<div class="canvas">
+<div style="background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 16px;">
+
+<div style="font-weight:500; font-size:14px; margin-bottom:12px;"><i class="ti ti-sitemap" aria-hidden="true"></i> Как агенты работают вместе</div>
+
+<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px;">
+
+  <div style="background:var(--color-background-primary); border:0.5px solid var(--color-border-tertiary); border-radius:var(--border-radius-lg); padding:14px;">
+    <div style="font-weight:500; font-size:13px;">Supervisor</div>
+    <div style="font-size:12px; color:var(--color-text-secondary); line-height:1.5; margin:4px 0 12px;">Главный делегирует подзадачи суб-агентам.</div>
+    <svg viewBox="0 0 160 90" role="img" style="width:100%; height:80px;">
+      <title>Схема supervisor</title>
+      <circle class="c-purple" cx="80" cy="20" r="13"/>
+      <circle class="c-gray" cx="35" cy="70" r="12"/><circle class="c-gray" cx="80" cy="70" r="12"/><circle class="c-gray" cx="125" cy="70" r="12"/>
+      <path d="M73 30 L42 60 M80 33 L80 58 M87 30 L118 60" stroke="#888780" stroke-width="1.5" fill="none"/>
+    </svg>
+  </div>
+
+  <div style="background:var(--color-background-primary); border:2px solid var(--color-border-info); border-radius:var(--border-radius-lg); padding:14px; position:relative;">
+    <span style="position:absolute; top:-10px; left:12px; font-size:11px; background:var(--color-background-info); color:var(--color-text-info); padding:2px 10px; border-radius:6px;">для Planning</span>
+    <div style="font-weight:500; font-size:13px;">Debate</div>
+    <div style="font-size:12px; color:var(--color-text-secondary); line-height:1.5; margin:4px 0 12px;">Агенты спорят и сходятся к решению.</div>
+    <svg viewBox="0 0 160 90" role="img" style="width:100%; height:80px;">
+      <title>Схема debate</title>
+      <circle class="c-purple" cx="35" cy="45" r="13"/>
+      <circle class="c-teal" cx="125" cy="30" r="13"/>
+      <circle class="c-coral" cx="125" cy="65" r="13"/>
+      <path d="M48 42 L112 31 M48 48 L112 63 M125 43 L125 52" stroke="#888780" stroke-width="1.5" fill="none"/>
+    </svg>
+  </div>
+
+  <div style="background:var(--color-background-primary); border:0.5px solid var(--color-border-tertiary); border-radius:var(--border-radius-lg); padding:14px;">
+    <div style="font-weight:500; font-size:13px;">Pipeline</div>
+    <div style="font-size:12px; color:var(--color-text-secondary); line-height:1.5; margin:4px 0 12px;">Выход одного — вход следующего.</div>
+    <svg viewBox="0 0 160 90" role="img" style="width:100%; height:80px;">
+      <title>Схема pipeline</title>
+      <defs><marker id="ar" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="#888780"/></marker></defs>
+      <circle class="c-purple" cx="28" cy="45" r="12"/>
+      <circle class="c-teal" cx="80" cy="45" r="12"/>
+      <circle class="c-coral" cx="132" cy="45" r="12"/>
+      <path d="M42 45 L64 45 M94 45 L116 45" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+    </svg>
+  </div>
+
+</div>
+
+<div style="display:flex; align-items:center; justify-content:space-between; margin-top:14px; background:var(--color-background-primary); border:0.5px solid var(--color-border-tertiary); border-radius:var(--border-radius-md); padding:10px 14px;">
+  <span style="font-size:12px; color:var(--color-text-secondary);"><i class="ti ti-repeat" aria-hidden="true"></i> Макс. раундов</span>
+  <span style="font-size:13px; font-weight:500;">6</span>
+  <span style="font-size:12px; color:var(--color-text-secondary);"><i class="ti ti-gavel" aria-hidden="true"></i> Арбитр</span>
+  <span style="font-size:13px; font-weight:500;">Архитектор</span>
+  <button style="font-size:13px; border-color:var(--color-border-info); color:var(--color-text-info);">Запустить команду</button>
+</div>
+</div>
+</div>
+</body>
+</html>

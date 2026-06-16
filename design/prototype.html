@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neurogate — кликабельный прототип</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css">
+<style>
+.np-row{display:flex;align-items:center;gap:12px;background:var(--color-background-secondary);border-radius:8px;padding:12px;cursor:pointer;}
+.np-row:hover{background:var(--color-background-tertiary);}
+.np-num{width:26px;height:26px;border-radius:50%;background:var(--color-background-info);color:var(--color-text-info);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:500;flex:none;}
+.np-num.done{background:var(--color-background-success);color:var(--color-text-success);}
+.np-t{font-size:13px;font-weight:500;}
+.np-s{font-size:12px;color:var(--color-text-secondary);}
+.np-l{font-size:12px;color:var(--color-text-secondary);}
+.np-mono{font-size:11px;color:var(--color-text-tertiary);font-family:var(--font-mono);}
+.np-prov{display:flex;align-items:center;gap:12px;padding:11px 12px;border-bottom:0.5px solid var(--color-border-tertiary);cursor:pointer;}
+.np-prov:hover{background:var(--color-background-secondary);}
+.np-ic{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;flex:none;}
+.np-tag{font-size:11px;padding:4px 10px;border-radius:6px;background:var(--color-background-secondary);color:var(--color-text-tertiary);}
+.np-tag.on{background:var(--color-background-info);color:var(--color-text-info);}
+.np-topo{position:relative;background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:10px;padding:12px;cursor:pointer;}
+.np-topo.sel{border:2px solid var(--color-border-info);}
+.np-topo:hover{background:var(--color-background-tertiary);}
+.np-msg{border-left:3px solid;border-radius:0;padding-left:10px;font-size:13px;line-height:1.5;}
+.np-who{font-size:12px;font-weight:500;}
+.np-step{display:flex;align-items:center;gap:8px;font-size:13px;padding:6px 8px;background:var(--color-background-secondary);border-radius:6px;}
+.np-tab{font-size:12px;padding:6px 11px;border-radius:7px;border:0.5px solid var(--color-border-tertiary);background:var(--color-background-primary);cursor:pointer;color:var(--color-text-secondary);}
+.np-tab.active{background:var(--color-background-info);color:var(--color-text-info);border-color:var(--color-border-info);}
+</style>
+</head>
+<body>
+<div class="canvas">
+<div style="background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 10px;">
+
+<div id="np-nav" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;"></div>
+
+<div id="np-stage" style="background:var(--color-background-primary); border:0.5px solid var(--color-border-tertiary); border-radius:var(--border-radius-lg); padding:16px; min-height:300px;">
+
+  <section data-screen="onboarding">
+    <div style="text-align:center; max-width:420px; margin:0 auto;">
+      <div style="width:44px;height:44px;border-radius:12px;background:#EEEDFE;display:flex;align-items:center;justify-content:center;margin:0 auto 10px;color:#534AB7;"><i class="ti ti-hexagon" aria-hidden="true" style="font-size:24px;"></i></div>
+      <div style="font-size:18px;font-weight:500;">Добро пожаловать в Neurogate</div>
+      <div style="font-size:13px;color:var(--color-text-secondary);margin-top:4px;">Любые ИИ-API. Команды агентов. Планирование вместе.</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:16px;">
+      <div class="np-row" data-go="providers"><span class="np-num done"><i class="ti ti-check" aria-hidden="true"></i></span><div style="flex:1;"><div class="np-t">Подключить API</div><div class="np-s">Anthropic, OpenAI, локальные, кастомные</div></div><i class="ti ti-chevron-right" aria-hidden="true" style="color:var(--color-text-tertiary);"></i></div>
+      <div class="np-row" data-go="agent"><span class="np-num">2</span><div style="flex:1;"><div class="np-t">Собрать команду</div><div class="np-s">Модели и роли агентов</div></div><i class="ti ti-chevron-right" aria-hidden="true" style="color:var(--color-text-tertiary);"></i></div>
+      <div class="np-row" data-go="chat"><span class="np-num">3</span><div style="flex:1;"><div class="np-t">Запустить Planning Mode</div><div class="np-s">Поставь задачу — команда найдёт решение</div></div><i class="ti ti-chevron-right" aria-hidden="true" style="color:var(--color-text-tertiary);"></i></div>
+    </div>
+  </section>
+
+  <section data-screen="providers">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;"><span style="font-weight:500;font-size:14px;"><i class="ti ti-plug-connected" aria-hidden="true"></i> Провайдеры</span><button class="np-go" data-go="custom" style="font-size:12px;padding:6px 12px;"><i class="ti ti-plus" aria-hidden="true"></i> Подключить API</button></div>
+    <div style="border:0.5px solid var(--color-border-tertiary);border-radius:8px;overflow:hidden;">
+      <div class="np-prov"><span class="np-ic" style="background:#FAECE7;color:#993C1D;"><i class="ti ti-sparkles" aria-hidden="true"></i></span><div style="flex:1;"><div class="np-t">Anthropic</div><div class="np-mono">sk-ant-&bull;&bull;&bull;4f2a</div></div><span class="np-s">4 модели</span><span style="font-size:11px;color:var(--color-text-success);"><i class="ti ti-circle-check" aria-hidden="true"></i></span></div>
+      <div class="np-prov"><span class="np-ic" style="background:#E1F5EE;color:#0F6E56;"><i class="ti ti-circle" aria-hidden="true"></i></span><div style="flex:1;"><div class="np-t">OpenAI</div><div class="np-mono">sk-&bull;&bull;&bull;a91c</div></div><span class="np-s">6 моделей</span><span style="font-size:11px;color:var(--color-text-success);"><i class="ti ti-circle-check" aria-hidden="true"></i></span></div>
+      <div class="np-prov"><span class="np-ic" style="background:#F1EFE8;color:#5F5E5A;"><i class="ti ti-server" aria-hidden="true"></i></span><div style="flex:1;"><div class="np-t">Ollama &middot; локально</div><div class="np-mono">localhost:11434</div></div><span class="np-s">3 модели</span><span style="font-size:11px;color:var(--color-text-success);"><i class="ti ti-circle-check" aria-hidden="true"></i></span></div>
+      <div class="np-prov np-go" data-go="custom" style="border-bottom:none;"><span class="np-ic" style="background:#E6F1FB;color:#185FA5;"><i class="ti ti-plug" aria-hidden="true"></i></span><div style="flex:1;"><div class="np-t">My LLM Gateway &middot; custom</div><div class="np-mono">api.myhost.ai/v1</div></div><span class="np-s">1 модель</span><span style="font-size:11px;color:var(--color-text-warning);"><i class="ti ti-alert-circle" aria-hidden="true"></i></span></div>
+    </div>
+    <div style="font-size:11px;color:var(--color-text-tertiary);margin-top:8px;"><i class="ti ti-lock" aria-hidden="true"></i> Ключи в системном keychain.</div>
+  </section>
+
+  <section data-screen="custom">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;"><i class="ti ti-plug-connected" aria-hidden="true" style="font-size:18px;color:var(--color-text-info);"></i><span style="font-weight:500;font-size:14px;">Подключить кастомный API</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;">
+      <div><label class="np-l">Название</label><input type="text" value="My LLM Gateway" style="width:100%;"></div>
+      <div><label class="np-l">Base URL</label><input type="text" value="https://api.myhost.ai/v1" style="width:100%;"></div>
+      <div><label class="np-l">Аутентификация</label><select style="width:100%;"><option>Bearer header</option><option>API key (query)</option></select></div>
+      <div><label class="np-l">Стриминг</label><select style="width:100%;"><option>SSE</option><option>JSON lines</option></select></div>
+    </div>
+    <div style="margin-top:10px;"><label class="np-l">Маппинг тела</label><textarea style="width:100%;min-height:54px;font-family:var(--font-mono);font-size:12px;">{ "model": "{{model}}", "messages": {{messages}} }</textarea></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding-top:10px;border-top:0.5px solid var(--color-border-tertiary);">
+      <span style="font-size:12px;color:var(--color-text-success);"><i class="ti ti-circle-check" aria-hidden="true"></i> Соединение успешно &middot; 320 ms</span>
+      <button class="np-go" data-go="agent" style="font-size:13px;border-color:var(--color-border-info);color:var(--color-text-info);">Сохранить</button>
+    </div>
+  </section>
+
+  <section data-screen="agent">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;"><div style="width:34px;height:34px;border-radius:50%;background:#EEEDFE;display:flex;align-items:center;justify-content:center;color:#534AB7;"><i class="ti ti-robot" aria-hidden="true"></i></div><span style="font-weight:500;font-size:14px;">Конструктор агента</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;">
+      <div><label class="np-l">Провайдер</label><select style="width:100%;"><option>Anthropic</option><option>My LLM Gateway (custom)</option></select></div>
+      <div><label class="np-l">Модель</label><select style="width:100%;"><option>Claude Opus 4.8</option></select></div>
+      <div><label class="np-l">Роль</label><select style="width:100%;"><option>Архитектор</option><option>Критик</option><option>Исследователь</option></select></div>
+      <div><label class="np-l">Бюджет токенов</label><input type="text" value="40 000 / раунд" style="width:100%;"></div>
+    </div>
+    <div style="margin-top:10px;"><label class="np-l">Системный промпт</label><textarea style="width:100%;min-height:48px;font-size:13px;">Ты ведущий архитектор. Проектируй слои и интерфейсы модульно.</textarea></div>
+    <div style="margin-top:10px;"><span class="np-l">Инструменты</span><div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;"><span class="np-tag on">Web search</span><span class="np-tag on">Файлы</span><span class="np-tag on">MCP: github</span></div></div>
+    <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button class="np-go" data-go="topology" style="font-size:13px;border-color:var(--color-border-info);color:var(--color-text-info);">Сохранить агента</button></div>
+  </section>
+
+  <section data-screen="topology">
+    <div style="font-weight:500;font-size:14px;margin-bottom:10px;"><i class="ti ti-sitemap" aria-hidden="true"></i> Как агенты работают вместе</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
+      <div class="np-topo"><div class="np-t">Supervisor</div><div class="np-s">Делегирование подзадач</div></div>
+      <div class="np-topo sel"><span style="position:absolute;top:-9px;left:10px;font-size:11px;background:var(--color-background-info);color:var(--color-text-info);padding:2px 8px;border-radius:6px;">Planning</span><div class="np-t">Debate</div><div class="np-s">Спор и консенсус</div></div>
+      <div class="np-topo"><div class="np-t">Pipeline</div><div class="np-s">Выход &rarr; вход</div></div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;background:var(--color-background-secondary);border-radius:8px;padding:10px 12px;">
+      <span style="font-size:12px;color:var(--color-text-secondary);"><i class="ti ti-repeat" aria-hidden="true"></i> Раундов: <b style="font-weight:500;">6</b></span>
+      <span style="font-size:12px;color:var(--color-text-secondary);"><i class="ti ti-gavel" aria-hidden="true"></i> Арбитр: <b style="font-weight:500;">Архитектор</b></span>
+      <button class="np-go" data-go="chat" style="font-size:13px;border-color:var(--color-border-info);color:var(--color-text-info);">Запустить</button>
+    </div>
+  </section>
+
+  <section data-screen="chat">
+    <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center;"><span style="font-size:11px;padding:4px 10px;background:var(--color-background-info);color:var(--color-text-info);border-radius:6px;">Planning</span><span style="font-size:11px;padding:4px 10px;color:var(--color-text-secondary);">Chat</span><span style="margin-left:auto;font-size:11px;color:var(--color-text-tertiary);"><i class="ti ti-coin" aria-hidden="true"></i> 12.4k</span></div>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <div class="np-msg" style="border-color:#534AB7;"><div class="np-who" style="color:#534AB7;">Архитектор &middot; Claude Opus</div>Слой адаптеров провайдеров с единым интерфейсом; кастомные API — через маппинг.</div>
+      <div class="np-msg" style="border-color:#1D9E75;"><div class="np-who" style="color:#0F6E56;">Критик &middot; GPT-4o</div>Tool-use различается — нужна нормализация вызова инструментов.</div>
+      <div class="np-msg" style="border-color:#D85A30;"><div class="np-who" style="color:#993C1D;"><i class="ti ti-world-search" aria-hidden="true"></i> Исследователь &middot; Gemini</div>В MCP: OpenRouter уже унифицирует часть схем — можно опереться.</div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:12px;"><input type="text" placeholder="Задача для команды…" style="flex:1;"><button class="np-go" data-go="build" style="border-color:var(--color-border-info);color:var(--color-text-info);"><i class="ti ti-arrow-right" aria-hidden="true"></i></button></div>
+  </section>
+
+  <section data-screen="build">
+    <div style="display:grid;grid-template-columns:1fr 200px;gap:12px;">
+      <div>
+        <div style="font-weight:500;font-size:14px;margin-bottom:8px;"><i class="ti ti-clipboard-check" aria-hidden="true"></i> Решение команды</div>
+        <div class="np-l" style="margin:0 0 4px;">Стек</div><div style="font-size:13px;">Tauri 2 + React/TS + Rust + SQLite</div>
+        <div class="np-l" style="margin:10px 0 6px;">Шаги</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <div class="np-step"><i class="ti ti-grip-vertical" aria-hidden="true" style="color:var(--color-text-tertiary);"></i> 1. Адаптеры провайдеров</div>
+          <div class="np-step"><i class="ti ti-grip-vertical" aria-hidden="true" style="color:var(--color-text-tertiary);"></i> 2. Оркестратор суб-агентов</div>
+          <div class="np-step" style="background:var(--color-background-info);color:var(--color-text-info);"><i class="ti ti-pencil" aria-hidden="true"></i> 3. MCP + веб-поиск</div>
+          <div class="np-step"><i class="ti ti-grip-vertical" aria-hidden="true" style="color:var(--color-text-tertiary);"></i> 4. Planning Mode</div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div style="background:var(--color-background-secondary);border-radius:8px;padding:10px 12px;"><div class="np-l" style="margin:0 0 6px;"><i class="ti ti-folder" aria-hidden="true"></i> Проект</div><div style="font-family:var(--font-mono);font-size:12px;line-height:1.8;color:var(--color-text-secondary);">Neurogate/<br>├─ src-tauri/<br>├─ src/<br>│&nbsp;&nbsp;├─ agents/<br>│&nbsp;&nbsp;└─ providers/</div></div>
+        <button class="np-go" data-go="onboarding" style="font-size:14px;padding:10px;border-color:var(--color-border-info);color:var(--color-text-info);background:var(--color-background-info);"><i class="ti ti-hammer" aria-hidden="true"></i> Build проект</button>
+      </div>
+    </div>
+  </section>
+
+</div>
+</div>
+</div>
+
+<script>
+(function(){
+  var screens=[["onboarding","Старт"],["providers","Провайдеры"],["custom","Кастомный API"],["agent","Агент"],["topology","Топология"],["chat","Диалог"],["build","Решение"]];
+  var nav=document.getElementById("np-nav");
+  var stage=document.getElementById("np-stage");
+  function show(id){
+    stage.querySelectorAll("section[data-screen]").forEach(function(s){s.style.display=s.getAttribute("data-screen")===id?"block":"none";});
+    nav.querySelectorAll(".np-tab").forEach(function(t){t.classList.toggle("active",t.getAttribute("data-id")===id);});
+  }
+  screens.forEach(function(s){
+    var b=document.createElement("button");
+    b.className="np-tab";b.textContent=s[1];b.setAttribute("data-id",s[0]);
+    b.onclick=function(){show(s[0]);};
+    nav.appendChild(b);
+  });
+  stage.addEventListener("click",function(e){
+    var g=e.target.closest("[data-go]");
+    if(g){show(g.getAttribute("data-go"));}
+  });
+  show("onboarding");
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neurogate — настройки провайдеров</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css">
+</head>
+<body>
+<div class="canvas">
+<div style="background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 16px;">
+
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+  <span style="font-weight:500; font-size:14px;"><i class="ti ti-plug-connected" aria-hidden="true"></i> Провайдеры</span>
+  <button style="font-size:12px; padding:6px 12px;"><i class="ti ti-plus" aria-hidden="true"></i> Подключить API</button>
+</div>
+
+<div style="background:var(--color-background-primary); border:0.5px solid var(--color-border-tertiary); border-radius:var(--border-radius-lg); overflow:hidden;">
+
+  <div style="display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:0.5px solid var(--color-border-tertiary);">
+    <div style="width:34px; height:34px; border-radius:8px; background:#FAECE7; display:flex; align-items:center; justify-content:center; color:#993C1D;"><i class="ti ti-sparkles" aria-hidden="true" style="font-size:18px;"></i></div>
+    <div style="flex:1;">
+      <div style="font-size:13px; font-weight:500;">Anthropic</div>
+      <div style="font-size:11px; color:var(--color-text-tertiary); font-family:var(--font-mono);">sk-ant-&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;4f2a</div>
+    </div>
+    <span style="font-size:11px; color:var(--color-text-secondary);">4 модели</span>
+    <span style="font-size:11px; color:var(--color-text-success);"><i class="ti ti-circle-check" aria-hidden="true"></i> активен</span>
+    <i class="ti ti-dots" aria-hidden="true" style="color:var(--color-text-tertiary);"></i>
+  </div>
+
+  <div style="display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:0.5px solid var(--color-border-tertiary);">
+    <div style="width:34px; height:34px; border-radius:8px; background:#E1F5EE; display:flex; align-items:center; justify-content:center; color:#0F6E56;"><i class="ti ti-circle" aria-hidden="true" style="font-size:18px;"></i></div>
+    <div style="flex:1;">
+      <div style="font-size:13px; font-weight:500;">OpenAI</div>
+      <div style="font-size:11px; color:var(--color-text-tertiary); font-family:var(--font-mono);">sk-&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;a91c</div>
+    </div>
+    <span style="font-size:11px; color:var(--color-text-secondary);">6 моделей</span>
+    <span style="font-size:11px; color:var(--color-text-success);"><i class="ti ti-circle-check" aria-hidden="true"></i> активен</span>
+    <i class="ti ti-dots" aria-hidden="true" style="color:var(--color-text-tertiary);"></i>
+  </div>
+
+  <div style="display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:0.5px solid var(--color-border-tertiary);">
+    <div style="width:34px; height:34px; border-radius:8px; background:#F1EFE8; display:flex; align-items:center; justify-content:center; color:#5F5E5A;"><i class="ti ti-server" aria-hidden="true" style="font-size:18px;"></i></div>
+    <div style="flex:1;">
+      <div style="font-size:13px; font-weight:500;">Ollama <span style="font-size:11px; color:var(--color-text-tertiary); font-weight:400;">&middot; локально</span></div>
+      <div style="font-size:11px; color:var(--color-text-tertiary); font-family:var(--font-mono);">http://localhost:11434</div>
+    </div>
+    <span style="font-size:11px; color:var(--color-text-secondary);">3 модели</span>
+    <span style="font-size:11px; color:var(--color-text-success);"><i class="ti ti-circle-check" aria-hidden="true"></i> активен</span>
+    <i class="ti ti-dots" aria-hidden="true" style="color:var(--color-text-tertiary);"></i>
+  </div>
+
+  <div style="display:flex; align-items:center; gap:12px; padding:12px 14px;">
+    <div style="width:34px; height:34px; border-radius:8px; background:#E6F1FB; display:flex; align-items:center; justify-content:center; color:#185FA5;"><i class="ti ti-plug" aria-hidden="true" style="font-size:18px;"></i></div>
+    <div style="flex:1;">
+      <div style="font-size:13px; font-weight:500;">My LLM Gateway <span style="font-size:11px; color:var(--color-text-info); font-weight:400;">&middot; custom</span></div>
+      <div style="font-size:11px; color:var(--color-text-tertiary); font-family:var(--font-mono);">api.myhost.ai/v1</div>
+    </div>
+    <span style="font-size:11px; color:var(--color-text-secondary);">1 модель</span>
+    <span style="font-size:11px; color:var(--color-text-warning);"><i class="ti ti-alert-circle" aria-hidden="true"></i> ключ истёк</span>
+    <i class="ti ti-dots" aria-hidden="true" style="color:var(--color-text-tertiary);"></i>
+  </div>
+
+</div>
+
+<div style="font-size:11px; color:var(--color-text-tertiary); margin-top:10px; display:flex; align-items:center; gap:6px;"><i class="ti ti-lock" aria-hidden="true"></i> Ключи хранятся в системном keychain, в базе — только ссылки.</div>
+</div>
+</div>
+</body>
+</html>

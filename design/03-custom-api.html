@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neurogate — мастер кастомного API</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css">
+</head>
+<body>
+<div class="canvas">
+<div style="background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 16px;">
+
+<div style="background:var(--color-background-primary); border:0.5px solid var(--color-border-tertiary); border-radius:var(--border-radius-lg); padding:16px 18px;">
+  <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
+    <i class="ti ti-plug-connected" aria-hidden="true" style="font-size:20px; color:var(--color-text-info);"></i>
+    <span style="font-weight:500; font-size:15px;">Подключить кастомный API</span>
+  </div>
+
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px 14px;">
+    <div>
+      <label style="font-size:12px; color:var(--color-text-secondary);">Название</label>
+      <input type="text" value="My LLM Gateway" style="width:100%;" />
+    </div>
+    <div>
+      <label style="font-size:12px; color:var(--color-text-secondary);">Base URL</label>
+      <input type="text" value="https://api.myhost.ai/v1" style="width:100%;" />
+    </div>
+    <div>
+      <label style="font-size:12px; color:var(--color-text-secondary);">Аутентификация</label>
+      <select style="width:100%;"><option>Bearer header</option><option>API key (query)</option><option>Custom header</option></select>
+    </div>
+    <div>
+      <label style="font-size:12px; color:var(--color-text-secondary);">Стриминг</label>
+      <select style="width:100%;"><option>SSE</option><option>JSON lines</option><option>Нет</option></select>
+    </div>
+  </div>
+
+  <div style="margin-top:14px;">
+    <label style="font-size:12px; color:var(--color-text-secondary);">Маппинг тела запроса</label>
+    <textarea style="width:100%; min-height:72px; font-family:var(--font-mono); font-size:12px;">{ "model": "{{model}}", "messages": {{messages}}, "stream": {{stream}} }</textarea>
+  </div>
+
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:12px;">
+    <div>
+      <label style="font-size:12px; color:var(--color-text-secondary);">JSONPath ответа</label>
+      <input type="text" value="choices[0].message.content" style="width:100%; font-family:var(--font-mono); font-size:12px;" />
+    </div>
+    <div>
+      <label style="font-size:12px; color:var(--color-text-secondary);">JSONPath чанка</label>
+      <input type="text" value="choices[0].delta.content" style="width:100%; font-family:var(--font-mono); font-size:12px;" />
+    </div>
+  </div>
+
+  <div style="margin-top:14px;">
+    <span style="font-size:12px; color:var(--color-text-secondary);">Возможности модели</span>
+    <div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">
+      <span style="font-size:11px; padding:4px 10px; background:var(--color-background-info); color:var(--color-text-info); border-radius:6px;"><i class="ti ti-check" aria-hidden="true"></i> streaming</span>
+      <span style="font-size:11px; padding:4px 10px; background:var(--color-background-info); color:var(--color-text-info); border-radius:6px;"><i class="ti ti-check" aria-hidden="true"></i> tool-use</span>
+      <span style="font-size:11px; padding:4px 10px; background:var(--color-background-secondary); color:var(--color-text-tertiary); border-radius:6px;">vision</span>
+      <span style="font-size:11px; padding:4px 10px; background:var(--color-background-secondary); color:var(--color-text-tertiary); border-radius:6px;">200k ctx</span>
+    </div>
+  </div>
+
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-top:16px; padding-top:12px; border-top:0.5px solid var(--color-border-tertiary);">
+    <span style="font-size:12px; color:var(--color-text-success);"><i class="ti ti-circle-check" aria-hidden="true"></i> Соединение успешно &middot; 320 ms</span>
+    <div style="display:flex; gap:8px;">
+      <button style="font-size:13px;"><i class="ti ti-plug" aria-hidden="true"></i> Тест</button>
+      <button style="font-size:13px; border-color:var(--color-border-info); color:var(--color-text-info);">Сохранить</button>
+    </div>
+  </div>
+</div>
+</div>
+</div>
+</body>
+</html>
