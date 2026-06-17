@@ -313,8 +313,27 @@ function loadProjects(defaultProjects: ProjectConfig[]): ProjectConfig[] {
   }
 }
 
+function looksLikeEncodingDamage(text: string): boolean {
+  const questionMarks = (text.match(/\?/g) ?? []).length;
+  return /\?{3,}/.test(text) && questionMarks >= Math.max(6, Math.floor(text.length * 0.2));
+}
+
+function repairCorruptedMessage(message: ChatMessage): ChatMessage {
+  if (!looksLikeEncodingDamage(message.text)) return message;
+
+  const text = message.author === "system"
+    ? "Сначала отправьте задачу или контекст проекта. Без этого агенты не запускаются: моделям нечего разбирать."
+    : "Ответ был повреждён из-за кодировки. Запустите этот шаг заново после отправки понятной задачи или контекста проекта.";
+
+  return {
+    ...message,
+    text,
+    tokens: Math.max(16, Math.ceil(text.length / 4)),
+  };
+}
+
 function normalizeSession(session: SessionConfig, fallbackProjectId: string): SessionConfig {
-  const messages = Array.isArray(session.messages) ? session.messages : [];
+  const messages = Array.isArray(session.messages) ? session.messages.map(repairCorruptedMessage) : [];
   return {
     ...session,
     id: session.id || "session-" + Date.now(),
@@ -336,6 +355,7 @@ function loadSessions(defaultSession: SessionConfig, projects: ProjectConfig[]):
     const sessions = (JSON.parse(raw) as SessionConfig[])
       .map((session) => normalizeSession(session, fallbackProjectId))
       .filter((session) => projects.some((project) => project.id === session.projectId));
+    if (raw.includes("???")) persistSessions(sessions);
     return sessions.length ? sessions : [normalizeSession(defaultSession, fallbackProjectId)];
   } catch {
     return [normalizeSession(defaultSession, fallbackProjectId)];
@@ -991,18 +1011,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   startTeam: async () => {
     if (get().busy) return;
     const { project, session, projects, sessions } = createProjectWithSession(get().projects, get().sessions);
+    const guardedSession = withSystemMessage(
+      session,
+      "Сначала опишите задачу в поле ввода. Команда не начнёт разбор без контекста, чтобы модели понимали, над чем работать.",
+    );
+    const guardedSessions = replaceSession(sessions, guardedSession);
     persistProjects(projects);
-    persistSessions(sessions);
-    persistActiveIds(project.id, session.id);
+    persistSessions(guardedSessions);
+    persistActiveIds(project.id, guardedSession.id);
     set({
       projects,
-      sessions,
+      sessions: guardedSessions,
       activeProjectId: project.id,
-      activeSessionId: session.id,
-      session,
+      activeSessionId: guardedSession.id,
+      session: guardedSession,
       screen: "chat",
     });
-    await get().runTeam();
   },
   createSession: (projectId) => set((state) => {
     const targetProjectId = projectId ?? state.activeProjectId;
@@ -1125,6 +1149,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { agents, providers, topology, session, sessions, projects, activeProjectId, mcpServers } = get();
     if (!activeProjectId || !get().activeSessionId) return;
     const trimmedPrompt = prompt.trim();
+    const hasUserContext = session.messages.some((message) => message.author === "user" && message.text.trim());
+    if (!trimmedPrompt && !hasUserContext) {
+      const warning = "Сначала отправьте задачу или контекст проекта. Без этого агенты не запускаются: моделям нечего разбирать.";
+      if (!session.messages.some((message) => message.author === "system" && message.text.includes("Сначала отправьте задачу"))) {
+        const guardedSession = withSystemMessage(session, warning);
+        const guardedSessions = replaceSession(sessions, guardedSession);
+        persistSessions(guardedSessions);
+        set({ screen: "chat", session: guardedSession, sessions: guardedSessions });
+      } else {
+        set({ screen: "chat" });
+      }
+      return;
+    }
     const now = new Date().toISOString();
     const derivedTitle = trimmedPrompt ? titleFromPrompt(trimmedPrompt) : session.title;
     const userMessage: ChatMessage | undefined = trimmedPrompt

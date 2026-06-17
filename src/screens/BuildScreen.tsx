@@ -16,7 +16,7 @@ export function BuildScreen() {
   const startAgentImplementation = useAppStore((state) => state.startAgentImplementation);
   const lastBuild = useAppStore((state) => state.lastBuild);
   const busy = useAppStore((state) => state.busy);
-  const scaffoldReady = artifact.status === "scaffolded" || artifact.status === "built";
+  const scaffoldReady = artifact.status === "scaffolded" || artifact.status === "built" || (lastBuild?.phase === "scaffold" && !lastBuild.skipped);
   const assignments = planImplementationAssignments(artifact, agents);
 
   async function handleSelectWorkspace() {
@@ -28,14 +28,28 @@ export function BuildScreen() {
     }
   }
 
+  async function handleStartAgents() {
+    if (busy) return;
+    if (!scaffoldReady) {
+      await implementProject();
+    }
+    startAgentImplementation();
+  }
+
   return (
     <div className="build-layout">
       <section className="build-main">
         <SectionTitle
           icon="clipboard-check"
           title="Что решила команда"
-          subtitle="Согласованный план реализации — сначала подготовьте каркас, затем раздайте задачи агентам"
+          subtitle="Согласованный план реализации — подготовьте каркас, затем нажмите большую кнопку запуска агентов"
         />
+
+        <div className="implementation-flow">
+          <div className="flow-step done"><span>1</span><b>Каркас</b><small>{scaffoldReady ? "готов" : "нужно создать"}</small></div>
+          <div className={scaffoldReady ? "flow-step current" : "flow-step"}><span>2</span><b>Агенты</b><small>запуск реализации</small></div>
+          <div className="flow-step"><span>3</span><b>Проверка</b><small>чат, файлы, тесты</small></div>
+        </div>
 
         <div className="decision-steps">
           {artifact.steps.map((step, index) => (
@@ -89,10 +103,7 @@ export function BuildScreen() {
         <button className="primary wide implement-button" type="button" disabled={busy} onClick={() => void implementProject()}>
           <i className="ti ti-hammer" aria-hidden="true" /> {busy ? "Готовим каркас..." : scaffoldReady ? "Обновить каркас" : "Создать каркас проекта"}
         </button>
-        <p className="small-muted implement-hint">Шаг 1: команда записывает план и базовый каркас. Шаг 2: агенты берут задачи ниже и реализуют проект в этой же папке.</p>
-        <button className="ghost wide implement-button" type="button" disabled={busy || !scaffoldReady} onClick={startAgentImplementation}>
-          <i className="ti ti-users" aria-hidden="true" /> Запустить агентов реализации
-        </button>
+        <p className="small-muted implement-hint">Шаг 1 уже выполнен, если видите статус «каркас готов».</p>
 
         {lastBuild ? (
           <div className="build-result">
@@ -104,10 +115,16 @@ export function BuildScreen() {
           </div>
         ) : null}
 
-        <div className="build-phase-card">
-          <div className="mini-label">Следующий этап</div>
-          <b>Реализация распределяется между агентами</b>
-          <p className="small-muted">Архитектор держит контракты, разработчики пишут код, критик и тестировщик проверяют риски и качество. Рабочая папка остаётся той же.</p>
+        <div className={scaffoldReady ? "implementation-cta ready pulse-cta" : "implementation-cta"}>
+          <div>
+            <div className="mini-label">Дальше к реализации</div>
+            <b>Нажмите «Запустить агентов реализации»</b>
+            <p className="small-muted">После клика приложение перейдёт в чат: каждый агент напишет, что берёт в работу и какие файлы/результаты должен подготовить.</p>
+          </div>
+          <button className="primary wide implement-button pulse-button" type="button" disabled={busy} onClick={() => void handleStartAgents()}>
+            <i className="ti ti-users" aria-hidden="true" /> {scaffoldReady ? "????????? ??????? ??????????" : "??????? ?????? ? ????????? ???????"}
+          </button>
+          {!scaffoldReady ? <small className="small-muted">???? ?????? ??? ?? ?????, ?????? ??????? ??? ????????????? ? ????? ???????? ???????.</small> : null}
         </div>
 
         <div className="panel-title spaced">Задачи агентам</div>

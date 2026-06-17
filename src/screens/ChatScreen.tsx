@@ -66,9 +66,12 @@ export function ChatScreen() {
   const projectSessions = sessions.filter((item) => item.projectId === activeProjectId && !item.archivedAt);
   const archivedSessions = sessions.filter((item) => item.archivedAt && !projects.find((project) => project.id === item.projectId)?.archivedAt);
   const canChat = Boolean(activeProject && activeSessionId);
+  const hasUserTask = session.messages.some((message) => message.author === "user" && message.text.trim());
   const agentMessages = session.messages.filter((message) => Boolean(message.agentRole));
   const debateRoles = agentMessages.map((message) => message.agentRole as AgentRole);
-  const showDebateSummary = session.mode === "planning" && agentMessages.length > 0;
+  const showDebateSummary = hasUserTask && session.mode === "planning" && agentMessages.length > 0;
+  const showTaskGuard = canChat && !hasUserTask && !busy;
+  const canRunImplementation = canChat && hasUserTask && (artifact.status === "scaffolded" || artifact.status === "built");
 
   function modelLabel(providerId: string, modelId: string): string {
     const provider = providers.find((item) => item.id === providerId);
@@ -94,6 +97,11 @@ export function ChatScreen() {
     } finally {
       setSelectingWorkspace(false);
     }
+  }
+
+  async function handleRunImplementationRound() {
+    if (!canRunImplementation || busy) return;
+    await runTeam("Режим реализации: начните выполнять план как команда разработчиков. Разбейте работу по файлам, напишите следующий конкретный шаг реализации, укажите что менять в рабочей папке и какие проверки выполнить.");
   }
 
   function messageAuthorLabel(message: typeof session.messages[number]): string {
@@ -203,6 +211,12 @@ export function ChatScreen() {
           <span><i className="ti ti-coin" aria-hidden="true" /> {session.tokensUsed.toLocaleString("ru-RU")} / {session.tokenBudget.toLocaleString("ru-RU")}</span>
         </div>
         <div className="message-list">
+          {showTaskGuard ? (
+            <div className="task-guard-card pulse-cta">
+              <b>Сначала отправьте задачу</b>
+              <p>Агенты не начнут разбор без контекста. Напишите, что нужно построить, исправить или исследовать — после этого команда поймёт, над чем работать.</p>
+            </div>
+          ) : null}
           {session.messages.length === 0 ? (
             <div className="empty-chat">
               <b>{canChat ? "Новая сессия готова" : activeProject ? "Активных сессий нет" : "Активных проектов нет"}</b>
@@ -214,6 +228,15 @@ export function ChatScreen() {
           {busy ? <TeamThinking agents={agents} /> : null}
           {!busy && showDebateSummary ? (
             <DebateSummary artifact={artifact} roles={debateRoles} onGoToBuild={() => setScreen("build")} />
+          ) : null}
+          {!busy && canRunImplementation ? (
+            <div className="chat-implementation-cta pulse-cta">
+              <b>Дальше — запустить работу агентов</b>
+              <p>Нажмите кнопку: агенты перейдут от плана к следующему раунду реализации и напишут, что делать в файлах.</p>
+              <button className="primary wide" type="button" onClick={() => void handleRunImplementationRound()}>
+                <i className="ti ti-player-play" aria-hidden="true" /> Запустить работу агентов
+              </button>
+            </div>
           ) : null}
         </div>
         <form className="composer" onSubmit={(event) => void submitPrompt(event)}>

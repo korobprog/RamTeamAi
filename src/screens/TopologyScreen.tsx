@@ -70,7 +70,7 @@ export function TopologyScreen() {
       <div className="topology-controls">
         <label>Макс. раундов<input type="number" min={1} max={20} value={topology.maxRounds} onChange={(event) => setTopology({ maxRounds: Number(event.target.value) })} /></label>
         <label>Арбитр<select value={topology.arbiterAgentId} onChange={(event) => setTopology({ arbiterAgentId: event.target.value })}>{agents.map((agent) => <option value={agent.id} key={agent.id}>{agent.name}</option>)}</select></label>
-        <button className="primary" type="button" disabled={busy} onClick={() => void startTeam()}>{busy ? "Запускаем…" : "Запустить команду"}</button>
+        <button className="primary" type="button" disabled={busy} onClick={() => void startTeam()}>{busy ? "Открываем..." : "Перейти к постановке задачи"}</button>
       </div>
     </div>
   );

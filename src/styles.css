@@ -318,14 +318,44 @@ label input, label select, label textarea, .textarea-label textarea { display: b
 .decision-step-text { font-size: 13px; line-height: 1.4; }
 .decision-step input { flex: 1; border: 0; background: transparent; color: inherit; height: 26px; }
 .decision-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.implementation-flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+.flow-step { padding: 10px; border: 0.5px solid var(--color-border-tertiary); border-radius: 9px; background: var(--color-background-primary); display: grid; gap: 3px; }
+.flow-step span { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: var(--color-background-secondary); color: var(--color-text-secondary); font-size: 12px; }
+.flow-step b { font-size: 13px; }
+.flow-step small { color: var(--color-text-tertiary); }
+.flow-step.done { border-color: var(--color-border-success); background: var(--color-background-success); }
+.flow-step.done span { background: var(--color-background-primary); color: var(--color-text-success); }
+.flow-step.current { border-color: var(--color-border-info); background: var(--color-background-info); }
+.flow-step.current span { background: var(--color-background-primary); color: var(--color-text-info); }
 .workspace-card { display: flex; align-items: center; gap: 8px; padding: 10px; border-radius: 8px; background: var(--color-background-secondary); border: 0.5px solid var(--color-border-tertiary); margin: 8px 0; font-size: 12px; }
 .workspace-card.set { border-color: var(--color-border-success); color: var(--color-text-success); }
 .workspace-card i { font-size: 18px; }
 .workspace-card .workspace-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.implement-button { margin-top: 6px; height: 40px; font-weight: 500; }
+.implement-button { margin-top: 6px; min-height: 40px; height: auto; padding: 8px 12px; font-weight: 500; line-height: 1.25; white-space: normal; text-align: center; align-items: center; }
 .implement-hint { margin-top: 6px; }
 .build-phase-card { margin-top: 12px; padding: 10px; border-radius: 9px; background: var(--color-background-info); border: 0.5px solid var(--color-border-info); }
 .build-phase-card b { display: block; margin: 4px 0; font-size: 13px; }
+.implementation-cta { display: grid; gap: 10px; margin-top: 12px; padding: 12px; border-radius: 10px; border: 1px solid var(--color-border-tertiary); background: var(--color-background-secondary); }
+.implementation-cta.ready { border-color: var(--color-border-info); background: var(--color-background-info); }
+.implementation-cta b { display: block; margin: 3px 0; font-size: 14px; }
+.implementation-cta p { margin: 0; line-height: 1.45; }
+.chat-implementation-cta { margin-top: 12px; padding: 14px; border: 1px solid var(--color-border-info); border-radius: var(--border-radius-md); background: var(--color-background-info); }
+.chat-implementation-cta b { display: block; margin-bottom: 4px; }
+.chat-implementation-cta p { margin: 0 0 10px; color: var(--color-text-secondary); line-height: 1.45; }
+.task-guard-card { margin-bottom: 12px; padding: 14px; border: 1px solid var(--color-border-warning); border-radius: var(--border-radius-md); background: var(--color-background-warning); }
+.task-guard-card b { display: block; margin-bottom: 5px; color: var(--color-text-warning); }
+.task-guard-card p { margin: 0; color: var(--color-text-secondary); line-height: 1.45; }
+.pulse-cta { animation: ramteam-pulse-cta 1.35s ease-in-out infinite; }
+.pulse-button { animation: ramteam-pulse-button 1.1s ease-in-out infinite; }
+.pulse-button:disabled, .pulse-cta:has(button:disabled) { animation: none; }
+@keyframes ramteam-pulse-cta {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-text-info) 24%, transparent); transform: translateY(0); }
+  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-text-info) 0%, transparent); transform: translateY(-1px); }
+}
+@keyframes ramteam-pulse-button {
+  0%, 100% { transform: scale(1); filter: brightness(1); }
+  50% { transform: scale(1.025); filter: brightness(1.08); }
+}
 .assignment-list { display: grid; gap: 8px; margin-top: 8px; }
 .assignment-card { padding: 10px; border: 0.5px solid var(--color-border-tertiary); border-radius: 9px; background: var(--color-background-primary); font-size: 12px; }
 .assignment-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }

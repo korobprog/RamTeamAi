@@ -33,6 +33,94 @@ export async function runPlanningRound(agents: AgentConfig[], topology: Topology
 }
 
 export function synthesizePlan(messages: ChatMessage[], artifact: PlanArtifact): PlanArtifact {
-  const risksMentioned = messages.some((message) => message.text.toLowerCase().includes("\u043b\u0438\u043c\u0438\u0442"));
-  return { ...artifact, edited: true, status: "draft", steps: risksMentioned ? artifact.steps : [...artifact.steps.slice(0, 4), "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u043b\u0438\u043c\u0438\u0442\u044b \u0440\u0430\u0443\u043d\u0434\u043e\u0432/\u0442\u043e\u043a\u0435\u043d\u043e\u0432 \u0438 \u0430\u0440\u0431\u0438\u0442\u0440\u0430 \u043f\u0440\u043e\u0442\u0438\u0432 \u0437\u0430\u0446\u0438\u043a\u043b\u0438\u0432\u0430\u043d\u0438\u044f", ...artifact.steps.slice(4)] };
+  const userPrompt = [...messages].reverse().find((message) => message.author === "user")?.text.trim() ?? "";
+  const discussion = messages.map((message) => message.text).join("\n").toLowerCase();
+  const promptLower = userPrompt.toLowerCase();
+  const source = `${promptLower}\n${discussion}`;
+
+  if (!userPrompt) {
+    return {
+      ...artifact,
+      edited: true,
+      status: "draft",
+      stack: [],
+      steps: ["Сначала получить задачу пользователя", "После постановки задачи выбрать стек", "Затем собрать план реализации"],
+      projectTree: "Проект будет сформирован после постановки задачи.",
+    };
+  }
+
+  const isShop = /магазин|e-?commerce|каталог|товар|корзин|оплат|заказ|checkout|витрин/.test(source);
+  const needsWow = /вау|wow|анимац|эффект|премиаль|luxury|визуал|дизайн/.test(source);
+  const mentionsNext = /next\.?js|next\b/.test(source);
+  const mentionsTilda = /tilda|webflow/.test(source);
+  const wantsFastNoCode = mentionsTilda && /быстро|без кода|no-code|лендинг/.test(source);
+
+  const stack = wantsFastNoCode
+    ? ["Tilda/Webflow", "Figma", "Airtable/Google Sheets", "Tinkoff/ЮKassa", "Telegram/Email заявки"]
+    : [
+      mentionsNext || isShop ? "Next.js" : "Vite + React",
+      "TypeScript",
+      needsWow ? "Tailwind CSS + Framer Motion" : "Tailwind CSS",
+      isShop ? "Каталог товаров + корзина" : "React Router",
+      isShop ? "Stripe/ЮKassa" : "REST/JSON API",
+      "Vercel/Cloudflare Pages",
+    ];
+
+  const title = isShop
+    ? "Интернет-магазин " + extractProjectName(userPrompt, "CrystalManjari")
+    : titleFromPrompt(userPrompt);
+
+  const steps = isShop
+    ? [
+      "Зафиксировать бренд, аудиторию и визуальную концепцию магазина",
+      "Спроектировать каталог, фильтры, карточку товара и структуру коллекций",
+      "Собрать премиальный UI с адаптивной сеткой, анимациями и вау-эффектами",
+      "Реализовать корзину, оформление заказа и интеграцию оплаты",
+      "Добавить админский источник товаров и безопасную обработку заявок",
+      "Проверить мобильную версию, скорость загрузки, SEO и сценарий покупки",
+    ]
+    : [
+      "Уточнить цель продукта, пользователей и главный пользовательский сценарий",
+      "Выбрать стек и архитектуру под задачу",
+      "Собрать первый рабочий экран и базовую навигацию",
+      "Подключить данные, формы и внешние интеграции",
+      "Проверить UX, ошибки, адаптивность и критерии готовности",
+    ];
+
+  return {
+    ...artifact,
+    title,
+    stack: unique(stack),
+    steps,
+    projectTree: renderProjectTree(title, isShop, wantsFastNoCode),
+    edited: true,
+    status: "draft",
+  };
+}
+
+function unique(items: string[]): string[] {
+  return [...new Set(items.filter(Boolean))];
+}
+
+function titleFromPrompt(prompt: string): string {
+  const cleaned = prompt.replace(/\s+/g, " ").trim();
+  if (!cleaned) return "Решение команды";
+  return cleaned.length > 56 ? cleaned.slice(0, 53).trimEnd() + "..." : cleaned;
+}
+
+function extractProjectName(prompt: string, fallback: string): string {
+  const latinName = prompt.match(/[A-Z][A-Za-z0-9-]{2,}/)?.[0];
+  return latinName ?? fallback;
+}
+
+function renderProjectTree(title: string, isShop: boolean, noCode: boolean): string {
+  if (noCode) {
+    return `${title}/\n├─ figma/\n├─ content/\n│  ├─ products.csv\n│  └─ brand.md\n├─ tilda-pages/\n└─ launch-checklist.md`;
+  }
+
+  if (isShop) {
+    return `${title}/\n├─ app/\n│  ├─ page.tsx\n│  ├─ catalog/\n│  ├─ product/[slug]/\n│  ├─ cart/\n│  └─ checkout/\n├─ components/\n│  ├─ product-card.tsx\n│  ├─ hero.tsx\n│  └─ wow-effects.tsx\n├─ lib/\n│  ├─ products.ts\n│  └─ payments.ts\n├─ content/products.json\n└─ README.md`;
+  }
+
+  return `${title}/\n├─ src/\n│  ├─ components/\n│  ├─ pages/\n│  ├─ lib/\n│  └─ styles/\n├─ tests/\n├─ docs/\n└─ README.md`;
 }
