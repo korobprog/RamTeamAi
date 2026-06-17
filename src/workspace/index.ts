@@ -40,6 +40,12 @@ export interface WebWorkspaceWriteResult {
   overwritten: boolean;
 }
 
+export interface WorkspaceWriteResult {
+  path: string;
+  created: boolean;
+  overwritten: boolean;
+}
+
 export async function pickWorkspaceFolder(currentPath?: string): Promise<string | undefined> {
   if (!isTauriRuntime()) {
     return pickWebWorkspaceFolder(currentPath);
@@ -85,17 +91,27 @@ export async function initWorkspaceFiles(rootPath: string): Promise<WorkspaceIni
     return getWebWorkspaceFallback(rootPath);
   }
 
-  return safeInvoke<WorkspaceInitResult>(
-    "init_workspace",
-    { rootPath },
-    () => ({
-      rootPath,
-      files: WORKSPACE_FILES,
-      createdFiles: [],
-      existingFiles: WORKSPACE_FILES,
-      message: "Init будет записан в выбранную папку при запуске внутри Tauri.",
-    }),
-  );
+  return safeInvoke<WorkspaceInitResult>("init_workspace", { rootPath });
+}
+
+export async function writeWorkspaceTextFile(
+  rootPath: string,
+  relativePath: string,
+  content: string,
+  options: { overwrite?: boolean } = {},
+): Promise<WorkspaceWriteResult> {
+  if (!isTauriRuntime()) {
+    const handle = await getWritableWebWorkspaceHandle();
+    if (!handle) throw new Error("Нет доступа на запись в выбранную web-папку. Выберите рабочую папку заново.");
+    return writeWebFile(handle, relativePath, content, options);
+  }
+
+  return safeInvoke<WorkspaceWriteResult>("write_workspace_file", {
+    rootPath,
+    relativePath,
+    content,
+    overwrite: options.overwrite ?? true,
+  });
 }
 
 export async function writeWebWorkspaceFile(
@@ -305,7 +321,11 @@ async function webFileExists(directory: WebDirectoryHandle, fileName: string): P
 }
 
 function splitWebPath(path: string): string[] {
-  return path.split(/[\\/]/).map((part) => part.trim()).filter(Boolean);
+  const parts = path.split(/[\\/]/).map((part) => part.trim()).filter(Boolean);
+  if (!parts.length || parts.some((part) => part === "." || part === ".." || part.includes(":"))) {
+    throw new Error("Workspace file path is invalid");
+  }
+  return parts;
 }
 
 function getWebWorkspaceFallback(rootPath: string): WorkspaceInitResult {

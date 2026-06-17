@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 use thiserror::Error;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -12,6 +12,12 @@ pub enum ProjectBuilderError {
     NotConfirmed,
     #[error("workspace path is empty")]
     EmptyWorkspacePath,
+    #[error("workspace file path is invalid")]
+    InvalidWorkspaceFilePath,
+    #[error("workspace file already exists: {0}")]
+    WorkspaceFileExists(String),
+    #[error("required workspace files were not created")]
+    MissingRequiredWorkspaceFiles,
     #[error("filesystem error: {0}")]
     Io(#[from] std::io::Error),
     #[error("time format error: {0}")]
@@ -50,6 +56,14 @@ pub struct WorkspaceInitResult {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceWriteResult {
+    pub path: String,
+    pub created: bool,
+    pub overwritten: bool,
+}
+
 pub fn build_project(
     artifact: &PlanArtifact,
     confirmed: bool,
@@ -83,9 +97,17 @@ pub fn build_project(
     )?;
 
     fs::create_dir_all(root.join("docs"))?;
+    fs::write(root.join("PLAN.md"), render_plan(artifact))?;
     fs::write(root.join("docs/plan.md"), render_plan(artifact))?;
+    if !files.iter().any(|file| file == "PLAN.md") {
+        files.push("PLAN.md".into());
+    }
     if !files.iter().any(|file| file == "docs/plan.md") {
         files.push("docs/plan.md".into());
+    }
+    fs::write(root.join("IMPLEMENTATION.md"), render_implementation_plan(artifact))?;
+    if !files.iter().any(|file| file == "IMPLEMENTATION.md") {
+        files.push("IMPLEMENTATION.md".into());
     }
 
     Ok(BuildResult {
@@ -93,7 +115,7 @@ pub fn build_project(
         root_path: root.display().to_string(),
         files,
         skipped: false,
-        message: "Проект записан в выбранную рабочую папку. Файлы MEMORY.md и PLAN.md сохранены без перезаписи.".into(),
+        message: "Проект записан в выбранную рабочую папку. MEMORY.md сохранён без перезаписи, PLAN.md обновлён текущим планом.".into(),
     })
 }
 
@@ -117,6 +139,10 @@ pub fn init_workspace(root_path: &Path) -> Result<WorkspaceInitResult, ProjectBu
     write_if_missing(root_path, "MEMORY.md", &memory_template(&created_at), &mut files, &mut created_files)?;
     write_if_missing(root_path, "PLAN.md", &plan_template(&created_at), &mut files, &mut created_files)?;
 
+    if !root_path.join("MEMORY.md").is_file() || !root_path.join("PLAN.md").is_file() {
+        return Err(ProjectBuilderError::MissingRequiredWorkspaceFiles);
+    }
+
     existing_files.extend(
         files
             .iter()
@@ -131,6 +157,56 @@ pub fn init_workspace(root_path: &Path) -> Result<WorkspaceInitResult, ProjectBu
         existing_files,
         message: "Рабочая папка инициализирована: созданы структура, MEMORY.md и PLAN.md без перезаписи существующих файлов.".into(),
     })
+}
+
+pub fn write_workspace_file(
+    root_path: &Path,
+    relative_path: &str,
+    content: &str,
+    overwrite: bool,
+) -> Result<WorkspaceWriteResult, ProjectBuilderError> {
+    if root_path.as_os_str().is_empty() {
+        return Err(ProjectBuilderError::EmptyWorkspacePath);
+    }
+
+    let relative = safe_relative_path(relative_path)?;
+    let path = root_path.join(&relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let existed = path.exists();
+    if existed && !overwrite {
+        return Err(ProjectBuilderError::WorkspaceFileExists(relative.display().to_string()));
+    }
+
+    fs::write(&path, content)?;
+    Ok(WorkspaceWriteResult {
+        path: relative.display().to_string().replace('\\', "/"),
+        created: !existed,
+        overwritten: existed,
+    })
+}
+
+fn safe_relative_path(value: &str) -> Result<PathBuf, ProjectBuilderError> {
+    let path = Path::new(value.trim());
+    if path.as_os_str().is_empty() {
+        return Err(ProjectBuilderError::InvalidWorkspaceFilePath);
+    }
+
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => result.push(part),
+            Component::CurDir => {}
+            _ => return Err(ProjectBuilderError::InvalidWorkspaceFilePath),
+        }
+    }
+
+    if result.as_os_str().is_empty() {
+        return Err(ProjectBuilderError::InvalidWorkspaceFilePath);
+    }
+    Ok(result)
 }
 
 fn write_if_missing(
@@ -169,6 +245,19 @@ fn render_plan(artifact: &PlanArtifact) -> String {
             .steps
             .iter()
             .map(|item| format!("- {item}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
+fn render_implementation_plan(artifact: &PlanArtifact) -> String {
+    format!(
+        "# Implementation\n\nПроект: {}\n\n## Правило\n- Не обсуждать по кругу: каждый раунд должен давать конкретные изменения файлов или проверяемый блок кода.\n- Если агент не может записать файл сам, он обязан вернуть точный путь, действие и код/diff.\n\n## Следующие шаги\n{}\n\n## Проверки\n- [ ] Запустить доступную сборку/линт/тесты.\n- [ ] Проверить изменённые файлы в выбранной рабочей папке.\n",
+        artifact.title,
+        artifact
+            .steps
+            .iter()
+            .map(|item| format!("- [ ] {item}"))
             .collect::<Vec<_>>()
             .join("\n")
     )

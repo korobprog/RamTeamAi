@@ -5,12 +5,12 @@ import { safeInvoke } from "../lib/tauri";
 import { callMcpTool as callMcpToolRequest, formatMcpToolsForPrompt, testMcpConnection } from "../mcp/manager";
 import { synthesizePlan } from "../orchestrator";
 import { completeWithProvider, maskSecret, rememberProviderSecret, testProviderConnection } from "../providers";
-import type { ProviderTestResult } from "../providers";
-import { buildProject, planImplementationAssignments } from "../projectBuilder";
+import type { CompletionResult, ProviderTestResult } from "../providers";
+import { buildProject, planImplementationAssignments, renderImplementationPlan } from "../projectBuilder";
 import { beginGithubDeviceFlow, disconnectGithub, isGithubConfigured, loadGithubProfile, pollGithubDeviceFlow } from "../integrations/github";
 import { describeFirebaseAuthError, isFirebaseConfigured, loadCloudSettings, loadFirebaseUid, saveCloudSettings, signInFirebaseWithGithubToken, signOutFirebase } from "../integrations/firebase";
-import type { AgentConfig, BuildResult, ChatMessage, CloudSettingsSnapshot, GithubTokenPollResult, McpServerConfig, McpServerTestResult, McpToolCallResult, PlanArtifact, ProjectConfig, ProjectGitLink, ProviderConfig, ProviderMonitoringConfig, ProviderQuotaWindow, ScreenId, SessionConfig, TopologyConfig, UserAccountState, WorkspaceInitResult } from "../types";
-import { clearStoredWebWorkspaceFolder, initWorkspaceFiles, pickWorkspaceFolder } from "../workspace";
+import type { AgentConfig, AgentRunMode, AppSettings, BuildResult, ChatMessage, CloudSettingsSnapshot, GithubTokenPollResult, McpServerConfig, McpServerTestResult, McpToolCallResult, PlanArtifact, ProjectConfig, ProjectGitLink, ProviderConfig, ProviderMonitoringConfig, ProviderQuotaWindow, ScreenId, SessionConfig, TopologyConfig, UserAccountState, WorkspaceInitResult } from "../types";
+import { clearStoredWebWorkspaceFolder, initWorkspaceFiles, pickWorkspaceFolder, writeWorkspaceTextFile } from "../workspace";
 
 const PROVIDERS_STORAGE_KEY = "RamTeamAi.providers.v2";
 const LEGACY_PROVIDERS_STORAGE_KEY = "RamTeamAi.provider-overrides";
@@ -22,8 +22,21 @@ const PROJECTS_STORAGE_KEY = "RamTeamAi.projects.v1";
 const SESSIONS_STORAGE_KEY = "RamTeamAi.sessions.v1";
 const ACTIVE_PROJECT_STORAGE_KEY = "RamTeamAi.active-project.v1";
 const ACTIVE_SESSION_STORAGE_KEY = "RamTeamAi.active-session.v1";
+const APP_SETTINGS_STORAGE_KEY = "RamTeamAi.app-settings.v1";
 
 const HOUR_MS = 60 * 60 * 1000;
+const DEFAULT_APP_SETTINGS: AppSettings = {
+  modelFallbackEnabled: true,
+};
+
+const IMPLEMENTATION_ROUND_PROMPT = [
+  "Режим реализации: работаем по утверждённому PLAN.md в выбранной рабочей папке.",
+  "Не обсуждайте задачу по кругу и не возвращайтесь к планированию, если нет реального блокера.",
+  "Каждый агент действует как разработчик: выбирает 1-3 файла, пишет create/update/delete и возвращает применимый код.",
+  "Чтобы приложение записало код, ставьте строку `Файл: path/to/file` прямо перед fenced code block и давайте полный контент файла или unified diff.",
+  "Если файл уже должен быть создан — напишите его содержимое сейчас. Если нужен тест — укажите команду проверки.",
+  "Запрещено отвечать только словами «нужно сделать». В конце ответа явно перечислите: изменяемые файлы, готовность, блокеры.",
+].join("\n");
 
 function quotaPresets(provider: ProviderConfig): Array<{ id: string; label: string; hours: number; limitTokens: number }> {
   if (provider.kind === "RamTeamAi") {
@@ -258,10 +271,33 @@ function persistActiveIds(projectId: string, sessionId: string): void {
   }
 }
 
+function normalizeAppSettings(settings?: Partial<AppSettings>): AppSettings {
+  return {
+    ...DEFAULT_APP_SETTINGS,
+    ...settings,
+  };
+}
+
+function loadAppSettings(): AppSettings {
+  if (typeof window === "undefined") return DEFAULT_APP_SETTINGS;
+  try {
+    const raw = window.localStorage.getItem(APP_SETTINGS_STORAGE_KEY);
+    return normalizeAppSettings(raw ? JSON.parse(raw) as Partial<AppSettings> : undefined);
+  } catch {
+    return DEFAULT_APP_SETTINGS;
+  }
+}
+
+function persistAppSettings(settings: AppSettings): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+}
+
 function createCloudSettingsSnapshot(state: {
   providers: ProviderConfig[];
   agents: AgentConfig[];
   topology: TopologyConfig;
+  appSettings: AppSettings;
   projects: ProjectConfig[];
   activeProjectId: string;
 }): CloudSettingsSnapshot {
@@ -274,6 +310,7 @@ function createCloudSettingsSnapshot(state: {
     })),
     agents: state.agents,
     topology: state.topology,
+    appSettings: state.appSettings,
     projects: state.projects.map((project) => ({
       id: project.id,
       title: project.title,
@@ -311,6 +348,174 @@ function loadProjects(defaultProjects: ProjectConfig[]): ProjectConfig[] {
   } catch {
     return defaultProjects;
   }
+}
+
+function extractWorkspaceFileBlocks(text: string): Array<{ path: string; content: string }> {
+  const files: Array<{ path: string; content: string }> = [];
+  const lines = text.split(/\r?\n/);
+  let pendingPath: string | undefined;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const pathMatch =
+      line.match(/(?:^|\b)(?:файл|file|path|create|update|создать|обновить)\s*[:：-]\s*`?([^`\s]+)`?/i) ??
+      line.match(/^\s*#{1,5}\s+`?((?:src|tests|docs|assets)\/[^`\s]+|[A-Za-z0-9._-]+\.(?:ts|tsx|js|jsx|json|css|md|py|rs|html))`?/i);
+    if (pathMatch?.[1]) {
+      pendingPath = pathMatch[1].trim();
+      continue;
+    }
+
+    if (!pendingPath || !line.trimStart().startsWith("```")) continue;
+
+    const content: string[] = [];
+    index += 1;
+    while (index < lines.length && !lines[index].trimStart().startsWith("```")) {
+      content.push(lines[index]);
+      index += 1;
+    }
+
+    if (content.length) {
+      files.push({ path: pendingPath, content: content.join("\n") + "\n" });
+    }
+    pendingPath = undefined;
+  }
+
+  return files;
+}
+
+interface CompletionCandidate {
+  provider: ProviderConfig;
+  modelId: string;
+}
+
+interface CompletionAttempt {
+  providerId: string;
+  providerName: string;
+  modelId: string;
+  modelLabel: string;
+  ok: boolean;
+  error?: string;
+  latencyMs?: number;
+  tokens?: number;
+}
+
+interface CompletionWithFallbackResult {
+  result: CompletionResult;
+  attempts: CompletionAttempt[];
+}
+
+class ModelFallbackError extends Error {
+  constructor(message: string, readonly attempts: CompletionAttempt[]) {
+    super(message);
+    this.name = "ModelFallbackError";
+  }
+}
+
+function modelLabel(provider: ProviderConfig, modelId: string): string {
+  return provider.models.find((model) => model.id === modelId)?.label ?? modelId;
+}
+
+function candidateKey(candidate: CompletionCandidate): string {
+  return candidate.provider.id + "::" + candidate.modelId;
+}
+
+function completionCandidates(agent: AgentConfig, providers: ProviderConfig[], fallbackEnabled: boolean): CompletionCandidate[] {
+  const primaryProvider = providers.find((provider) => provider.id === agent.providerId);
+  const candidates: CompletionCandidate[] = [];
+
+  if (primaryProvider) {
+    candidates.push({ provider: primaryProvider, modelId: agent.modelId });
+  }
+
+  if (!fallbackEnabled) return candidates;
+
+  if (primaryProvider && primaryProvider.status !== "not-configured") {
+    for (const model of primaryProvider.models) {
+      if (model.id !== agent.modelId) candidates.push({ provider: primaryProvider, modelId: model.id });
+    }
+  }
+
+  for (const provider of providers) {
+    if (provider.id === primaryProvider?.id || provider.status === "not-configured") continue;
+    for (const model of provider.models) candidates.push({ provider, modelId: model.id });
+  }
+
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = candidateKey(candidate);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function summarizeAttemptError(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  return text.replace(/\s+/g, " ").slice(0, 220);
+}
+
+async function completeWithModelFallback(
+  providers: ProviderConfig[],
+  agent: AgentConfig,
+  messages: ChatMessage[],
+  mode: AgentRunMode,
+  fallbackEnabled: boolean,
+): Promise<CompletionWithFallbackResult> {
+  const candidates = completionCandidates(agent, providers, fallbackEnabled);
+  if (!candidates.length) throw new Error("Провайдер агента не найден.");
+
+  const attempts: CompletionAttempt[] = [];
+  for (const candidate of candidates) {
+    const attemptAgent: AgentConfig = {
+      ...agent,
+      providerId: candidate.provider.id,
+      modelId: candidate.modelId,
+    };
+
+    try {
+      const result = await completeWithProvider(candidate.provider, attemptAgent, messages, mode);
+      attempts.push({
+        providerId: candidate.provider.id,
+        providerName: candidate.provider.name,
+        modelId: candidate.modelId,
+        modelLabel: modelLabel(candidate.provider, candidate.modelId),
+        ok: true,
+        latencyMs: result.latencyMs,
+        tokens: result.tokens,
+      });
+      return { result, attempts };
+    } catch (error) {
+      attempts.push({
+        providerId: candidate.provider.id,
+        providerName: candidate.provider.name,
+        modelId: candidate.modelId,
+        modelLabel: modelLabel(candidate.provider, candidate.modelId),
+        ok: false,
+        error: summarizeAttemptError(error),
+      });
+    }
+  }
+
+  const details = attempts
+    .slice(0, 6)
+    .map((attempt) => `${attempt.providerName}/${attempt.modelLabel}: ${attempt.error ?? "нет текста ошибки"}`)
+    .join("; ");
+  throw new ModelFallbackError((fallbackEnabled ? "Все fallback-модели не ответили. " : "") + details, attempts);
+}
+
+function fallbackNotice(attempts: CompletionAttempt[]): string {
+  if (attempts.length <= 1) return "";
+  const failed = attempts.filter((attempt) => !attempt.ok);
+  const success = attempts.find((attempt) => attempt.ok);
+  if (!success) return "";
+  const failedLabels = failed
+    .slice(0, 3)
+    .map((attempt) => `${attempt.providerName}/${attempt.modelLabel}`)
+    .join(", ");
+  return [
+    `↪️ Автопереключение модели: ${failedLabels} → ${success.providerName}/${success.modelLabel}.`,
+    failed[0]?.error ? `Причина: ${failed[0].error}` : "",
+  ].filter(Boolean).join("\n");
 }
 
 function looksLikeEncodingDamage(text: string): boolean {
@@ -511,6 +716,7 @@ interface AppState {
   account: UserAccountState;
   providers: ProviderConfig[];
   agents: AgentConfig[];
+  appSettings: AppSettings;
   projects: ProjectConfig[];
   sessions: SessionConfig[];
   activeProjectId: string;
@@ -522,6 +728,7 @@ interface AppState {
   workspacePath?: string;
   lastBuild?: BuildResult;
   lastWorkspaceInit?: WorkspaceInitResult;
+  activeRunMode?: AgentRunMode;
   busy: boolean;
   setScreen: (screen: ScreenId) => void;
   hydrateAccount: () => Promise<void>;
@@ -536,6 +743,7 @@ interface AppState {
   hydrateProviderSecrets: () => Promise<void>;
   refreshProviderMonitoring: (providerId?: string) => void;
   testProvider: (providerId: string) => Promise<ProviderTestResult | undefined>;
+  setAppSettings: (patch: Partial<AppSettings>) => void;
   updateAgent: (agent: AgentConfig) => void;
   upsertAgent: (agent: AgentConfig) => void;
   upsertMcpServer: (server: McpServerConfig) => void;
@@ -552,15 +760,17 @@ interface AppState {
   archiveSession: (sessionId: string) => void;
   restoreProject: (projectId: string) => void;
   restoreSession: (sessionId: string) => void;
+  clearArchiveMemory: () => void;
+  deleteArchive: () => void;
   setSessionMode: (mode: SessionConfig["mode"]) => void;
-  runTeam: (prompt?: string) => Promise<void>;
+  runTeam: (prompt?: string, mode?: AgentRunMode) => Promise<void>;
   updateArtifact: (patch: Partial<PlanArtifact>) => void;
   selectWorkspaceFolder: () => Promise<string | undefined>;
   clearWorkspaceFolder: () => void;
   initWorkspace: (announce?: boolean) => Promise<WorkspaceInitResult | undefined>;
   requestBuild: (confirmed: boolean) => Promise<void>;
   implementProject: () => Promise<void>;
-  startAgentImplementation: () => void;
+  startAgentImplementation: () => Promise<void>;
 }
 
 const initialProjects = loadProjects(projectsSeed);
@@ -580,6 +790,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   providers: loadProviders(providersSeed),
   agents: loadAgents(agentsSeed),
+  appSettings: loadAppSettings(),
   projects: initialProjects,
   sessions: initialSessions,
   activeProjectId: initialActiveProjectId,
@@ -589,6 +800,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   artifact: planArtifactSeed,
   mcpServers: loadMcpServers(mcpServersSeed),
   workspacePath: loadWorkspacePath(),
+  activeRunMode: undefined,
   busy: false,
   setScreen: (screen) => set({ screen }),
   hydrateAccount: async () => {
@@ -787,8 +999,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!snapshot) throw new Error("В облаке пока нет сохраненных настроек.");
       const projects = snapshot.projects.map((project) => ({ ...project }));
       const providers = restoreCloudProviders(snapshot);
+      const appSettings = normalizeAppSettings(snapshot.appSettings);
       persistProviders(providers);
       persistAgents(snapshot.agents);
+      persistAppSettings(appSettings);
       persistProjects(projects);
       const selection = ensureActiveSelection(projects, get().sessions, snapshot.activeProjectId);
       persistActiveIds(selection.activeProjectId, selection.activeSessionId);
@@ -797,6 +1011,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         providers,
         agents: snapshot.agents,
         topology: snapshot.topology,
+        appSettings,
         projects: selection.projects,
         activeProjectId: selection.activeProjectId,
         activeSessionId: selection.activeSessionId,
@@ -917,6 +1132,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     return result;
   },
+  setAppSettings: (patch) => set((state) => {
+    const appSettings = normalizeAppSettings({ ...state.appSettings, ...patch });
+    persistAppSettings(appSettings);
+    return { appSettings };
+  }),
   updateAgent: (agent) => set((state) => {
     const agents = state.agents.map((item) => (item.id === agent.id ? agent : item));
     persistAgents(agents);
@@ -1138,6 +1358,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       session: restoredSession,
     };
   }),
+  clearArchiveMemory: () => set((state) => {
+    const archivedProjectIds = new Set(state.projects.filter((project) => project.archivedAt).map((project) => project.id));
+    const sessions = state.sessions.map((session) => {
+      if (!session.archivedAt && !archivedProjectIds.has(session.projectId)) return session;
+      return { ...session, messages: [], tokensUsed: 0 };
+    });
+    const activeSession = sessions.find((session) => session.id === state.activeSessionId) ?? state.session;
+    persistSessions(sessions);
+    return { sessions, session: activeSession };
+  }),
+  deleteArchive: () => set((state) => {
+    const archivedProjectIds = new Set(state.projects.filter((project) => project.archivedAt).map((project) => project.id));
+    const projects = state.projects.filter((project) => !project.archivedAt);
+    const sessions = state.sessions.filter((session) => !session.archivedAt && !archivedProjectIds.has(session.projectId));
+    const selection = ensureActiveSelection(projects, sessions);
+    persistProjects(selection.projects);
+    persistSessions(selection.sessions);
+    persistActiveIds(selection.activeProjectId, selection.activeSessionId);
+    return selection;
+  }),
   setSessionMode: (mode) => set((state) => {
     if (!state.activeSessionId) return {};
     const session = { ...state.session, mode };
@@ -1145,10 +1385,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     persistSessions(sessions);
     return { session, sessions };
   }),
-  runTeam: async (prompt = "") => {
-    const { agents, providers, topology, session, sessions, projects, activeProjectId, mcpServers } = get();
+  runTeam: async (prompt = "", mode = "planning") => {
+    let { agents, providers, topology, session, sessions, projects, activeProjectId, mcpServers, appSettings } = get();
     if (!activeProjectId || !get().activeSessionId) return;
     const trimmedPrompt = prompt.trim();
+    let implementationRootPath: string | undefined;
     const hasUserContext = session.messages.some((message) => message.author === "user" && message.text.trim());
     if (!trimmedPrompt && !hasUserContext) {
       const warning = "Сначала отправьте задачу или контекст проекта. Без этого агенты не запускаются: моделям нечего разбирать.";
@@ -1162,6 +1403,36 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       return;
     }
+
+    if (mode === "implementation") {
+      let workspacePath = get().workspacePath;
+      if (!workspacePath) {
+        workspacePath = await pickWorkspaceFolder();
+        if (!workspacePath) return;
+        persistWorkspacePath(workspacePath);
+        set({ workspacePath });
+      }
+
+      const artifact = get().artifact;
+      const assignments = planImplementationAssignments(artifact, get().agents);
+      const result = await buildProject(artifact, true, workspacePath);
+      implementationRootPath = result.rootPath;
+      const implementationPlan = renderImplementationPlan(artifact, assignments);
+      await writeWorkspaceTextFile(result.rootPath, "IMPLEMENTATION.md", implementationPlan, { overwrite: true });
+      await writeWorkspaceTextFile(result.rootPath, "docs/agent-tasks.md", implementationPlan, { overwrite: true });
+      set({ lastBuild: result, workspacePath: result.rootPath });
+
+      agents = get().agents;
+      providers = get().providers;
+      topology = get().topology;
+      session = get().session;
+      sessions = get().sessions;
+      projects = get().projects;
+      activeProjectId = get().activeProjectId;
+      mcpServers = get().mcpServers;
+      appSettings = get().appSettings;
+    }
+
     const now = new Date().toISOString();
     const derivedTitle = trimmedPrompt ? titleFromPrompt(trimmedPrompt) : session.title;
     const userMessage: ChatMessage | undefined = trimmedPrompt
@@ -1199,6 +1470,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     set({
       busy: true,
+      activeRunMode: mode,
       screen: "chat",
       projects: nextProjects,
       sessions: nextSessions,
@@ -1217,33 +1489,65 @@ export const useAppStore = create<AppState>((set, get) => ({
           : item),
       }));
 
-      const provider = providers.find((item) => item.id === agent.providerId);
       const context = [...baseMessages, ...messages];
       let text: string;
       let tokens = 0;
       let latencyMs: number | undefined;
-      let failed = false;
+      let attempts: CompletionAttempt[] = [];
       try {
-        if (!provider) throw new Error("\u041f\u0440\u043e\u0432\u0430\u0439\u0434\u0435\u0440 \u0430\u0433\u0435\u043d\u0442\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d.");
         const agentWithMcpContext = agent.tools.includes("mcp")
           ? { ...agent, systemPrompt: agent.systemPrompt + "\n\n" + formatMcpToolsForPrompt(mcpServers) }
           : agent;
-        const result = await completeWithProvider(provider, agentWithMcpContext, context);
-        text = result.text;
-        tokens = result.tokens;
-        latencyMs = result.latencyMs;
+        const completion = await completeWithModelFallback(providers, agentWithMcpContext, context, mode, appSettings.modelFallbackEnabled);
+        attempts = completion.attempts;
+        const notice = fallbackNotice(attempts);
+        text = notice ? notice + "\n\n" + completion.result.text : completion.result.text;
+        tokens = Math.max(completion.result.tokens, Math.ceil(text.length / 4));
+        latencyMs = completion.result.latencyMs;
+        if (mode === "implementation" && implementationRootPath) {
+          const fileBlocks = extractWorkspaceFileBlocks(text);
+          const writtenFiles: string[] = [];
+          for (const file of fileBlocks.slice(0, 8)) {
+            try {
+              const writeResult = await writeWorkspaceTextFile(implementationRootPath, file.path, file.content, { overwrite: true });
+              writtenFiles.push(writeResult.path);
+            } catch {
+              // Keep the agent response visible even if one proposed file path cannot be written safely.
+            }
+          }
+          if (writtenFiles.length) {
+            text += "\n\n✅ Записано в рабочую папку: " + writtenFiles.join(", ");
+            tokens = Math.max(tokens, Math.ceil(text.length / 4));
+          }
+        }
       } catch (error) {
-        failed = true;
+        if (error instanceof ModelFallbackError) {
+          attempts = error.attempts;
+        } else if (error instanceof Error && !attempts.length) {
+          attempts = completionCandidates(agent, providers, appSettings.modelFallbackEnabled).slice(0, 1).map((candidate) => ({
+            providerId: candidate.provider.id,
+            providerName: candidate.provider.name,
+            modelId: candidate.modelId,
+            modelLabel: modelLabel(candidate.provider, candidate.modelId),
+            ok: false,
+            error: summarizeAttemptError(error),
+          }));
+        }
         text = "\u041e\u0448\u0438\u0431\u043a\u0430 API: " + (error instanceof Error ? error.message : String(error));
         tokens = Math.max(24, Math.ceil(text.length / 4));
       }
 
-      if (provider) {
+      if (attempts.length) {
         set((state) => {
-          const providerUsage = failed ? 0 : tokens;
-          const providers = state.providers.map((item) => item.id === provider.id
-            ? updateProviderMonitoring(item, { tokens: providerUsage, latencyMs, failed })
-            : item);
+          const providers = state.providers.map((provider) => {
+            const providerAttempts = attempts.filter((attempt) => attempt.providerId === provider.id);
+            if (!providerAttempts.length) return provider;
+            return providerAttempts.reduce((current, attempt) => updateProviderMonitoring(current, {
+              tokens: attempt.ok ? attempt.tokens ?? 0 : 0,
+              latencyMs: attempt.latencyMs,
+              failed: !attempt.ok,
+            }), provider);
+          });
           persistProviders(providers);
           return { providers };
         });
@@ -1272,10 +1576,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       persistSessions(sessions);
       return {
         busy: false,
+        activeRunMode: undefined,
         agents: state.agents.map((agent) => ({ ...agent, status: "done" })),
         session,
         sessions,
-        artifact: synthesizePlan(nextMessages, state.artifact),
+        artifact: mode === "planning" ? synthesizePlan(nextMessages, state.artifact) : state.artifact,
       };
     });
   },
@@ -1383,44 +1688,63 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     });
   },
-  startAgentImplementation: () => set((state) => {
-    if (!state.activeSessionId) return {};
+  startAgentImplementation: async () => {
+    if (get().busy || !get().activeSessionId) return;
 
-    const assignments = planImplementationAssignments(state.artifact, state.agents);
-    const now = new Date().toISOString();
-    const workspaceNote = state.workspacePath ? "\nРабочая папка: " + state.workspacePath : "";
-    const systemMessage = withSystemMessage(
-      state.session,
-      "🚀 Запущен этап реализации агентами. Каркас уже выбран как база; дальше роли работают в той же папке." + workspaceNote,
-    );
-    const agentMessages: ChatMessage[] = assignments.map((item, index) => ({
-      id: "implementation-" + Date.now() + "-" + index,
-      author: item.owner,
-      agentRole: item.role,
-      text: `Беру в работу: ${item.summary}\nРезультаты: ${item.deliverables.join("; ")}.`,
-      createdAt: now,
-      tokens: Math.max(48, Math.ceil((item.summary + item.deliverables.join(" ")).length / 3)),
-      tool: "files",
-    }));
-    const session: SessionConfig = {
-      ...systemMessage,
-      messages: [...systemMessage.messages, ...agentMessages],
-      tokensUsed: [...systemMessage.messages, ...agentMessages].reduce((sum, message) => sum + message.tokens, 0),
-    };
-    const sessions = replaceSession(state.sessions, session);
-    const projects = state.projects.map((project) => project.id === state.activeProjectId
-      ? { ...project, status: "active" as const, updatedAt: now }
-      : project);
-    persistSessions(sessions);
-    persistProjects(projects);
+    let { workspacePath } = get();
+    if (!workspacePath) {
+      workspacePath = await pickWorkspaceFolder();
+      if (!workspacePath) return;
+      persistWorkspacePath(workspacePath);
+      set({ workspacePath });
+    }
 
-    return {
-      screen: "chat",
-      session,
-      sessions,
-      projects,
-      agents: state.agents.map((agent) => ({ ...agent, status: "done" as const })),
-      artifact: { ...state.artifact, status: "scaffolded" as const },
-    };
-  }),
+    const { artifact, agents } = get();
+    const assignments = planImplementationAssignments(artifact, agents);
+    const implementationPlan = renderImplementationPlan(artifact, assignments);
+
+    set({ busy: true, activeRunMode: "implementation" });
+    try {
+      const result = await buildProject(artifact, true, workspacePath);
+      await writeWorkspaceTextFile(result.rootPath, "IMPLEMENTATION.md", implementationPlan, { overwrite: true });
+      await writeWorkspaceTextFile(result.rootPath, "docs/agent-tasks.md", implementationPlan, { overwrite: true });
+
+      const savedNote = [
+        "🚀 Запущен этап реализации агентами. Каркас и Markdown-планы записаны в рабочую папку.",
+        "Рабочая папка: " + result.rootPath,
+        "Файлы плана: PLAN.md, IMPLEMENTATION.md, docs/agent-tasks.md",
+      ].join("\n");
+
+      set((state) => {
+        const session = withSystemMessage(state.session, savedNote);
+        const sessions = replaceSession(state.sessions, session);
+        const now = new Date().toISOString();
+        const projects = state.projects.map((project) => project.id === state.activeProjectId
+          ? { ...project, status: "active" as const, updatedAt: now }
+          : project);
+        persistSessions(sessions);
+        persistProjects(projects);
+        return {
+          busy: false,
+          activeRunMode: undefined,
+          screen: "chat",
+          lastBuild: result,
+          projects,
+          session,
+          sessions,
+          artifact: { ...state.artifact, status: "scaffolded" as const },
+        };
+      });
+
+      await get().runTeam(IMPLEMENTATION_ROUND_PROMPT, "implementation");
+    } catch (error) {
+      set((state) => {
+        const text = "Ошибка запуска реализации: " + (error instanceof Error ? error.message : String(error));
+        const session = withSystemMessage(state.session, text);
+        const sessions = replaceSession(state.sessions, session);
+        persistSessions(sessions);
+        return { busy: false, activeRunMode: undefined, session, sessions };
+      });
+    }
+  },
 }));

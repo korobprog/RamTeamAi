@@ -1,5 +1,5 @@
 import { isTauriRuntime, safeInvoke } from "../lib/tauri";
-import type { AgentConfig, ChatMessage, ModelApiFormat, ProviderConfig } from "../types";
+import type { AgentConfig, AgentRunMode, ChatMessage, ModelApiFormat, ProviderConfig } from "../types";
 
 export interface UnifiedChatRequest { provider: ProviderConfig; model: string; messages: Pick<ChatMessage, "author" | "text">[]; stream: boolean; }
 export interface ProviderTestResult { ok: boolean; latencyMs: number; message: string; }
@@ -13,6 +13,41 @@ const TEST_MESSAGES = {
 };
 
 const nodeRuntimeSecrets = new Map<string, string>();
+const PLANNING_ARTIFACT_INSTRUCTIONS = [
+  "В конце ответа добавь короткий блок для сборки Build-артефакта.",
+  "Формат:",
+  "Стек: конкретные технологии через запятую; не подменяй стек шаблоном, если пользователь или обсуждение уже задали технологии.",
+  "Шаги:",
+  "1. конкретный следующий шаг",
+  "2. конкретный следующий шаг",
+  "Файлы: ключевые папки/файлы, если они уже понятны.",
+].join("\n");
+
+const IMPLEMENTATION_ARTIFACT_INSTRUCTIONS = [
+  "Режим реализации: не возвращайся к общему обсуждению, если нет блокера.",
+  "Работай как инженер в выбранной рабочей папке проекта: выбери 1-3 файла и сделай create/update/delete.",
+  "Если код можно написать сейчас — обязательно пиши применимые кодовые блоки с путями файлов.",
+  "Чтобы приложение записало код на диск, ставь строку `Файл: path/to/file` прямо перед fenced code block.",
+  "Для нового или небольшого файла давай полный контент файла. Для правки большого файла можно дать unified diff.",
+  "Не отвечай только планом или фразами «нужно сделать»; если задача понятна, возвращай код.",
+  "Формат результата:",
+  "1. Что меняю сейчас",
+  "2. Для каждого файла отдельный блок: `Файл: path/to/file` на строке перед fenced code block",
+  "3. Код или unified diff в fenced code block",
+  "4. Проверки: команды/ручные сценарии",
+  "Не ограничивайся фразами “надо сделать”; дай применимые изменения.",
+].join("\n");
+
+function promptForMode(mode: AgentRunMode): string {
+  return mode === "implementation" ? IMPLEMENTATION_ARTIFACT_INSTRUCTIONS : PLANNING_ARTIFACT_INSTRUCTIONS;
+}
+
+function agentForMode(agent: AgentConfig, mode: AgentRunMode): AgentConfig {
+  return {
+    ...agent,
+    systemPrompt: agent.systemPrompt + "\n\n" + promptForMode(mode),
+  };
+}
 
 function runtimeSecrets(): Map<string, string> {
   if (typeof window === "undefined") return nodeRuntimeSecrets;
@@ -61,10 +96,11 @@ function conversationMessages(messages: ChatMessage[]): { role: "user" | "assist
   return normalized.length ? normalized : [{ role: "user", content: "Continue." }];
 }
 
-function requestForAgent(provider: ProviderConfig, agent: AgentConfig, messages: ChatMessage[]): { url: string; body: unknown; format: ModelApiFormat | "ollama" | "gemini" } {
+function requestForAgent(provider: ProviderConfig, agent: AgentConfig, messages: ChatMessage[], mode: AgentRunMode): { url: string; body: unknown; format: ModelApiFormat | "ollama" | "gemini" } {
   const format = modelApiFormat(provider, agent.modelId);
   const conversation = conversationMessages(messages);
   const stream = RamTeamAiRequiresStream(provider, format);
+  const systemPrompt = agentForMode(agent, mode).systemPrompt;
 
   if (format === "anthropic") {
     return {
@@ -73,7 +109,7 @@ function requestForAgent(provider: ProviderConfig, agent: AgentConfig, messages:
       body: {
         model: agent.modelId,
         max_tokens: Math.min(agent.tokenBudget, 4096),
-        system: agent.systemPrompt,
+        system: systemPrompt,
         stream,
         messages: conversation,
       },
@@ -86,7 +122,7 @@ function requestForAgent(provider: ProviderConfig, agent: AgentConfig, messages:
       format,
       body: {
         model: agent.modelId,
-        instructions: agent.systemPrompt,
+        instructions: systemPrompt,
         input: conversation,
         max_output_tokens: Math.min(agent.tokenBudget, 4096),
         store: false,
@@ -102,7 +138,7 @@ function requestForAgent(provider: ProviderConfig, agent: AgentConfig, messages:
       body: {
         model: agent.modelId,
         stream: false,
-        messages: [{ role: "system", content: agent.systemPrompt }, ...conversation],
+        messages: [{ role: "system", content: systemPrompt }, ...conversation],
       },
     };
   }
@@ -113,7 +149,7 @@ function requestForAgent(provider: ProviderConfig, agent: AgentConfig, messages:
     body: {
       model: agent.modelId,
       stream: false,
-      messages: [{ role: "system", content: agent.systemPrompt }, ...conversation],
+      messages: [{ role: "system", content: systemPrompt }, ...conversation],
     },
   };
 }
@@ -176,7 +212,7 @@ function textFromSse(format: ModelApiFormat | "ollama" | "gemini", raw: string):
   return text || fallback;
 }
 
-async function completeWithBrowserFetch(provider: ProviderConfig, agent: AgentConfig, messages: ChatMessage[]): Promise<CompletionResult> {
+async function completeWithBrowserFetch(provider: ProviderConfig, agent: AgentConfig, messages: ChatMessage[], mode: AgentRunMode): Promise<CompletionResult> {
   if (provider.status === "not-configured") {
     throw new Error("\u041d\u0435\u0442 API \u043a\u043b\u044e\u0447\u0430: \u043e\u0442\u043a\u0440\u043e\u0439 \u00ab\u041f\u0440\u043e\u0432\u0430\u0439\u0434\u0435\u0440\u044b\u00bb \u0438 \u0434\u043e\u0431\u0430\u0432\u044c \u043a\u043b\u044e\u0447 \u0434\u043b\u044f " + provider.name + ".");
   }
@@ -187,7 +223,7 @@ async function completeWithBrowserFetch(provider: ProviderConfig, agent: AgentCo
   }
 
   const started = performance.now();
-  const request = requestForAgent(provider, agent, messages);
+  const request = requestForAgent(provider, agent, messages, mode);
   const headers: Record<string, string> = { "content-type": "application/json" };
 
   if (secret) {
@@ -232,13 +268,14 @@ export async function testProviderConnection(provider: ProviderConfig): Promise<
   return { ok: true, latencyMs, message: provider.status === "warning" ? TEST_MESSAGES.warning : TEST_MESSAGES.ok };
 }
 
-export async function completeWithProvider(provider: ProviderConfig, agent: AgentConfig, messages: ChatMessage[]): Promise<CompletionResult> {
+export async function completeWithProvider(provider: ProviderConfig, agent: AgentConfig, messages: ChatMessage[], mode: AgentRunMode = "planning"): Promise<CompletionResult> {
+  const preparedAgent = agentForMode(agent, mode);
   return safeInvoke<CompletionResult>(
     "complete_chat_with_provider",
-    { provider, agent, messages },
+    { provider, agent: preparedAgent, messages },
     async (error) => {
       if (isTauriRuntime()) throw error;
-      return await completeWithBrowserFetch(provider, agent, messages);
+      return await completeWithBrowserFetch(provider, agent, messages, mode);
     },
   );
 }

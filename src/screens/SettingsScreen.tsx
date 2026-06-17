@@ -99,6 +99,8 @@ export function SettingsScreen() {
   const unlinkProjectFromGithub = useAppStore((state) => state.unlinkProjectFromGithub);
   const providers = useAppStore((state) => state.providers);
   const agents = useAppStore((state) => state.agents);
+  const appSettings = useAppStore((state) => state.appSettings);
+  const setAppSettings = useAppStore((state) => state.setAppSettings);
   const mcpServers = useAppStore((state) => state.mcpServers);
   const topology = useAppStore((state) => state.topology);
   const workspacePath = useAppStore((state) => state.workspacePath);
@@ -275,6 +277,27 @@ export function SettingsScreen() {
           </label>
           <button className="primary" type="button" disabled={!activeProject || !repoOwner.trim() || !repoName.trim()} onClick={linkRepo}>Привязать repo</button>
         </div>
+      </section>
+
+      <section className="settings-section reliability-panel">
+        <div className="settings-section-head">
+          <div>
+            <h3>Надёжность моделей</h3>
+            <p>Если выбранная модель вернула ошибку, приложение автоматически попробует другие модели этого провайдера, а затем подключённые провайдеры.</p>
+          </div>
+          <Chip tone={appSettings.modelFallbackEnabled ? "success" : "default"}>{appSettings.modelFallbackEnabled ? "fallback включён" : "fallback выключен"}</Chip>
+        </div>
+        <label className="settings-toggle-row">
+          <input
+            type="checkbox"
+            checked={appSettings.modelFallbackEnabled}
+            onChange={(event) => setAppSettings({ modelFallbackEnabled: event.target.checked })}
+          />
+          <span>
+            <b>Автоподбор другой модели при ошибке API</b>
+            <small>Включено по умолчанию. В ответе агента будет видно, с какой модели на какую произошло переключение.</small>
+          </span>
+        </label>
       </section>
 
       <section className="settings-section">

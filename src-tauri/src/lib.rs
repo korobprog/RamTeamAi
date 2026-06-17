@@ -9,7 +9,7 @@ use core::github::{
     poll_device_flow, GithubDeviceCodeResponse, GithubTokenPollResult, GithubUserProfile,
 };
 use core::orchestrator::{run_planning_round, AgentConfig, ChatMessage, TopologyConfig};
-use core::project_builder::{build_project as write_project_files, init_workspace as init_workspace_files, BuildResult, PlanArtifact, WorkspaceInitResult};
+use core::project_builder::{build_project as write_project_files, init_workspace as init_workspace_files, write_workspace_file as write_workspace_text_file, BuildResult, PlanArtifact, WorkspaceInitResult, WorkspaceWriteResult};
 use core::provider::{complete_chat, default_providers, test_provider, CompletionResult, ProviderConfig, ProviderTestResult};
 use core::storage::Storage;
 use core::vault::{delete_secret, get_secret, has_secret, save_secret};
@@ -111,6 +111,22 @@ fn init_workspace(root_path: String) -> Result<WorkspaceInitResult, String> {
 }
 
 #[tauri::command]
+fn write_workspace_file(
+    root_path: String,
+    relative_path: String,
+    content: String,
+    overwrite: bool,
+) -> Result<WorkspaceWriteResult, String> {
+    write_workspace_text_file(
+        std::path::Path::new(root_path.trim()),
+        relative_path.trim(),
+        &content,
+        overwrite,
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn append_history(state: State<'_, AppState>, session_id: String, message: ChatMessage) -> Result<(), String> {
     state.storage.append_message(&session_id, &message).map_err(|error| error.to_string())
 }
@@ -167,6 +183,7 @@ pub fn run() {
             run_agents,
             build_project,
             init_workspace,
+            write_workspace_file,
             append_history,
             load_history,
             github_begin_device_flow,

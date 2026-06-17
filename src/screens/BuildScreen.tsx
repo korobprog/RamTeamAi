@@ -33,7 +33,7 @@ export function BuildScreen() {
     if (!scaffoldReady) {
       await implementProject();
     }
-    startAgentImplementation();
+    await startAgentImplementation();
   }
 
   return (
@@ -122,9 +122,9 @@ export function BuildScreen() {
             <p className="small-muted">После клика приложение перейдёт в чат: каждый агент напишет, что берёт в работу и какие файлы/результаты должен подготовить.</p>
           </div>
           <button className="primary wide implement-button pulse-button" type="button" disabled={busy} onClick={() => void handleStartAgents()}>
-            <i className="ti ti-users" aria-hidden="true" /> {scaffoldReady ? "????????? ??????? ??????????" : "??????? ?????? ? ????????? ???????"}
+            <i className="ti ti-users" aria-hidden="true" /> {scaffoldReady ? "Запустить агентов реализации" : "Создать каркас и запустить агентов"}
           </button>
-          {!scaffoldReady ? <small className="small-muted">???? ?????? ??? ?? ?????, ?????? ??????? ??? ????????????? ? ????? ???????? ???????.</small> : null}
+          {!scaffoldReady ? <small className="small-muted">Если каркас ещё не готов, кнопка создаст его автоматически и сразу запустит агентов.</small> : null}
         </div>
 
         <div className="panel-title spaced">Задачи агентам</div>

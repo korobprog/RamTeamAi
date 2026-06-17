@@ -74,7 +74,7 @@ export function FRamTeamAie({ children }: { children: ReactNode }) {
             </button>
           ))}
         </nav>
-        <div className="stage">{children}</div>
+        <div className={"stage stage-" + screen}>{children}</div>
       </section>
     </main>
   );

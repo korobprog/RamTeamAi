@@ -15,6 +15,7 @@ export type AuthKind = "bearer" | "header" | "query" | "none";
 export type StreamKind = "sse" | "jsonl" | "websocket" | "none";
 export type AgentRole = "architect" | "critic" | "researcher" | "arbiter" | "coder" | "security" | "product" | "tester";
 export type AgentStatus = "typing" | "waiting" | "mcp" | "done";
+export type AgentRunMode = "planning" | "implementation";
 export type TopologyKind = "supervisor" | "debate" | "pipeline";
 export type ToolKind = "web-search" | "files" | "mcp" | "project-builder";
 
@@ -228,6 +229,10 @@ export interface CloudSyncSettings {
   message?: string;
 }
 
+export interface AppSettings {
+  modelFallbackEnabled: boolean;
+}
+
 export interface UserAccountState {
   github?: GithubUserProfile;
   firebaseUid?: string;
@@ -240,6 +245,7 @@ export interface CloudSettingsSnapshot {
   providers: Array<Omit<ProviderConfig, "keyRef" | "maskedKey" | "monitoring" | "latencyMs" | "status"> & { status?: ProviderConfig["status"] }>;
   agents: AgentConfig[];
   topology: TopologyConfig;
+  appSettings?: AppSettings;
   projects: Array<Pick<ProjectConfig, "id" | "title" | "status" | "createdAt" | "updatedAt" | "archivedAt" | "github">>;
   activeProjectId: string;
 }

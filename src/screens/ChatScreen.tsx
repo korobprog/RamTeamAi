@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Chip } from "../components/FRamTeamAie";
 import { RoleBadge, roleLabel } from "../components/RoleBadge";
 import { TeamThinking } from "../components/TeamThinking";
@@ -8,6 +8,8 @@ import { useAppStore } from "../store/appStore";
 import type { AgentRole, ChatMessage } from "../types";
 
 const COLLAPSE_LIMIT = 360;
+type LibraryView = "chat" | "projects" | "sessions" | "archive";
+type ArchiveAction = "clear-memory" | "delete-archive";
 
 function MessageItem({ message, author }: { message: ChatMessage; author: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -33,6 +35,11 @@ const projectStatusLabel = { draft: "Черновик", active: "В работе
 export function ChatScreen() {
   const [prompt, setPrompt] = useState("");
   const [selectingWorkspace, setSelectingWorkspace] = useState(false);
+  const [libraryView, setLibraryView] = useState<LibraryView>("chat");
+  const [clearArchiveMemoryOnly, setClearArchiveMemoryOnly] = useState(false);
+  const [archiveAction, setArchiveAction] = useState<ArchiveAction | null>(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveNotice, setArchiveNotice] = useState("");
   const agents = useAppStore((state) => state.agents);
   const providers = useAppStore((state) => state.providers);
   const projects = useAppStore((state) => state.projects);
@@ -50,6 +57,8 @@ export function ChatScreen() {
   const archiveSession = useAppStore((state) => state.archiveSession);
   const restoreProject = useAppStore((state) => state.restoreProject);
   const restoreSession = useAppStore((state) => state.restoreSession);
+  const clearArchiveMemory = useAppStore((state) => state.clearArchiveMemory);
+  const deleteArchive = useAppStore((state) => state.deleteArchive);
   const workspacePath = useAppStore((state) => state.workspacePath);
   const selectWorkspaceFolder = useAppStore((state) => state.selectWorkspaceFolder);
   const clearWorkspaceFolder = useAppStore((state) => state.clearWorkspaceFolder);
@@ -59,12 +68,19 @@ export function ChatScreen() {
   const setScreen = useAppStore((state) => state.setScreen);
   const artifact = useAppStore((state) => state.artifact);
   const busy = useAppStore((state) => state.busy);
+  const activeRunMode = useAppStore((state) => state.activeRunMode);
   const tools = listAvailableTools(mcpServers).filter((tool) => tool.enabled);
   const activeProjects = projects.filter((project) => !project.archivedAt);
   const archivedProjects = projects.filter((project) => project.archivedAt);
   const activeProject = activeProjects.find((project) => project.id === activeProjectId);
   const projectSessions = sessions.filter((item) => item.projectId === activeProjectId && !item.archivedAt);
   const archivedSessions = sessions.filter((item) => item.archivedAt && !projects.find((project) => project.id === item.projectId)?.archivedAt);
+  const archiveItems = [
+    ...archivedProjects.map((project) => ({ kind: "project" as const, id: project.id, title: project.title, meta: projectArchiveMeta(project.id), date: project.archivedAt ?? "" })),
+    ...archivedSessions.map((item) => ({ kind: "session" as const, id: item.id, title: item.title, meta: archivedSessionMeta(item), date: item.archivedAt ?? "" })),
+  ].sort((a, b) => b.date.localeCompare(a.date));
+  const archivePreviewItems = archiveItems.slice(0, 3);
+  const archiveCount = archiveItems.length;
   const canChat = Boolean(activeProject && activeSessionId);
   const hasUserTask = session.messages.some((message) => message.author === "user" && message.text.trim());
   const agentMessages = session.messages.filter((message) => Boolean(message.agentRole));
@@ -72,6 +88,14 @@ export function ChatScreen() {
   const showDebateSummary = hasUserTask && session.mode === "planning" && agentMessages.length > 0;
   const showTaskGuard = canChat && !hasUserTask && !busy;
   const canRunImplementation = canChat && hasUserTask && (artifact.status === "scaffolded" || artifact.status === "built");
+  const latestSystemMessage = [...session.messages].reverse().find((message) => message.author === "system");
+  const messageListRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const list = messageListRef.current;
+    if (!list) return;
+    list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+  }, [session.messages.length, busy]);
 
   function modelLabel(providerId: string, modelId: string): string {
     const provider = providers.find((item) => item.id === providerId);
@@ -101,7 +125,7 @@ export function ChatScreen() {
 
   async function handleRunImplementationRound() {
     if (!canRunImplementation || busy) return;
-    await runTeam("Режим реализации: начните выполнять план как команда разработчиков. Разбейте работу по файлам, напишите следующий конкретный шаг реализации, укажите что менять в рабочей папке и какие проверки выполнить.");
+    await runTeam("Режим реализации: выполняйте PLAN.md как команда разработчиков. Не обсуждайте по кругу: для каждого ответа укажите конкретные файлы, действие create/update/delete, код или diff и команды проверки.", "implementation");
   }
 
   function messageAuthorLabel(message: typeof session.messages[number]): string {
@@ -130,12 +154,201 @@ export function ChatScreen() {
   }
 
   function projectArchiveMeta(projectId: string): string {
-    const count = sessions.filter((item) => item.projectId === projectId).length;
-    return "проект · " + count + " " + pluralRu(count, "сессия", "сессии", "сессий");
+    const projectSessions = sessions.filter((item) => item.projectId === projectId);
+    const count = projectSessions.length;
+    const memoryCleared = count > 0 && projectSessions.every((item) => item.messages.length === 0 && item.tokensUsed === 0);
+    return "проект · " + count + " " + pluralRu(count, "сессия", "сессии", "сессий") + (memoryCleared ? " · память очищена" : "");
   }
 
   function projectTitle(projectId: string): string {
     return projects.find((project) => project.id === projectId)?.title ?? "Проект";
+  }
+
+  function archivedSessionMeta(item: typeof sessions[number]): string {
+    const memoryState = item.messages.length === 0 && item.tokensUsed === 0 ? " · память очищена" : "";
+    return "сессия · " + projectTitle(item.projectId) + memoryState;
+  }
+
+
+  function openChatView() {
+    setLibraryView("chat");
+  }
+
+  function openProject(projectId: string) {
+    selectProject(projectId);
+    openChatView();
+  }
+
+  function openSession(sessionId: string) {
+    selectSession(sessionId);
+    openChatView();
+  }
+
+  function restoreAndOpenProject(projectId: string) {
+    restoreProject(projectId);
+    openChatView();
+  }
+
+  function restoreAndOpenSession(sessionId: string) {
+    restoreSession(sessionId);
+    openChatView();
+  }
+
+  function handleClearArchive() {
+    setArchiveNotice("");
+    setArchiveAction(clearArchiveMemoryOnly ? "clear-memory" : "delete-archive");
+  }
+
+  async function confirmArchiveAction() {
+    if (!archiveAction || archiveBusy) return;
+    const action = archiveAction;
+    setArchiveBusy(true);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    try {
+      if (action === "clear-memory") {
+        clearArchiveMemory();
+        setArchiveNotice("Память архивных сессий очищена. Карточки оставлены, реплики удалены.");
+      } else {
+        deleteArchive();
+        setArchiveNotice("");
+        openChatView();
+      }
+      setArchiveAction(null);
+    } catch (error) {
+      setArchiveNotice("Не удалось выполнить действие: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setArchiveBusy(false);
+    }
+  }
+
+  function renderLibraryCard({
+    key,
+    title,
+    meta,
+    actionLabel,
+    muted,
+    onOpen,
+    onAction,
+  }: {
+    key: string;
+    title: string;
+    meta: string;
+    actionLabel?: string;
+    muted?: boolean;
+    onOpen?: () => void;
+    onAction?: () => void;
+  }) {
+    return (
+      <div className={muted ? "library-card muted" : "library-card"} key={key}>
+        <button className="library-card-main" type="button" disabled={!onOpen} onClick={onOpen}>
+          <span>{title}</span>
+          <small>{meta}</small>
+        </button>
+        {actionLabel && onAction ? <button className="pill-action restore" type="button" onClick={onAction}>{actionLabel}</button> : null}
+      </div>
+    );
+  }
+
+  function renderLibraryPanel() {
+    if (libraryView === "projects") {
+      return (
+        <section className="library-screen">
+          <div className="library-header">
+            <div>
+              <h2>{"\u0412\u0441\u0435 \u043f\u0440\u043e\u0435\u043a\u0442\u044b"}</h2>
+              <p>{"\u041d\u0430\u0436\u043c\u0438\u0442\u0435 \u043d\u0430 \u043f\u0440\u043e\u0435\u043a\u0442, \u0447\u0442\u043e\u0431\u044b \u043f\u0435\u0440\u0435\u0439\u0442\u0438 \u0432\u043d\u0443\u0442\u0440\u044c."}</p>
+            </div>
+            <button className="ghost" type="button" onClick={openChatView}>{"\u041d\u0430\u0437\u0430\u0434 \u043a \u0447\u0430\u0442\u0443"}</button>
+          </div>
+          <div className="library-list">
+            {activeProjects.map((project) => renderLibraryCard({ key: project.id, title: project.title, meta: projectMeta(project.id), onOpen: () => openProject(project.id) }))}
+            {archivedProjects.map((project) => renderLibraryCard({ key: project.id, title: project.title, meta: projectArchiveMeta(project.id), actionLabel: "\u0412\u0435\u0440\u043d\u0443\u0442\u044c", muted: true, onAction: () => restoreAndOpenProject(project.id) }))}
+          </div>
+        </section>
+      );
+    }
+
+    if (libraryView === "sessions") {
+      const visibleSessions = sessions.filter((item) => !projects.find((project) => project.id === item.projectId)?.archivedAt);
+      return (
+        <section className="library-screen">
+          <div className="library-header">
+            <div>
+              <h2>{"\u0412\u0441\u0435 \u0441\u0435\u0441\u0441\u0438\u0438"}</h2>
+              <p>{"\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0435\u0441\u0441\u0438\u044e, \u0447\u0442\u043e\u0431\u044b \u043f\u0435\u0440\u0435\u0439\u0442\u0438 \u0432 \u0434\u0438\u0430\u043b\u043e\u0433."}</p>
+            </div>
+            <button className="ghost" type="button" onClick={openChatView}>{"\u041d\u0430\u0437\u0430\u0434 \u043a \u0447\u0430\u0442\u0443"}</button>
+          </div>
+          <div className="library-list">
+            {visibleSessions.map((item) => item.archivedAt
+              ? renderLibraryCard({ key: item.id, title: item.title, meta: "\u0430\u0440\u0445\u0438\u0432 \u00b7 " + projectTitle(item.projectId), actionLabel: "\u0412\u0435\u0440\u043d\u0443\u0442\u044c", muted: true, onAction: () => restoreAndOpenSession(item.id) })
+              : renderLibraryCard({ key: item.id, title: item.title, meta: projectTitle(item.projectId) + " \u00b7 " + sessionMeta(item), onOpen: () => openSession(item.id) }))}
+          </div>
+        </section>
+      );
+    }
+
+    if (libraryView === "archive") {
+      return (
+        <section className="library-screen">
+          <div className="library-header">
+            <div>
+              <h2>{"\u041f\u043e\u043b\u043d\u044b\u0439 \u0430\u0440\u0445\u0438\u0432"}</h2>
+              <p>{archiveCount}{" \u0437\u0430\u043f\u0438\u0441\u0435\u0439. \u041c\u043e\u0436\u043d\u043e \u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c \u0438\u043b\u0438 \u043e\u0447\u0438\u0441\u0442\u0438\u0442\u044c."}</p>
+            </div>
+            <button className="ghost" type="button" onClick={openChatView}>{"\u041d\u0430\u0437\u0430\u0434 \u043a \u0447\u0430\u0442\u0443"}</button>
+          </div>
+          <div className="archive-danger">
+            <label className="checkbox-label compact">
+              <input
+                type="checkbox"
+                checked={clearArchiveMemoryOnly}
+                disabled={archiveBusy}
+                onChange={(event) => {
+                  setClearArchiveMemoryOnly(event.target.checked);
+                  setArchiveAction(null);
+                  setArchiveNotice("");
+                }}
+              />
+              <span>{"\u041e\u0447\u0438\u0441\u0442\u0438\u0442\u044c \u0442\u043e\u043b\u044c\u043a\u043e \u043f\u0430\u043c\u044f\u0442\u044c, \u043a\u0430\u0440\u0442\u043e\u0447\u043a\u0438 \u043e\u0441\u0442\u0430\u0432\u0438\u0442\u044c"}</span>
+            </label>
+            <button className="danger-button" type="button" disabled={archiveCount === 0 || archiveBusy} onClick={handleClearArchive}>
+              {archiveBusy ? "Выполняю…" : clearArchiveMemoryOnly ? "\u041e\u0447\u0438\u0441\u0442\u0438\u0442\u044c \u043f\u0430\u043c\u044f\u0442\u044c" : "\u041e\u0447\u0438\u0441\u0442\u0438\u0442\u044c \u0432\u0435\u0441\u044c \u0430\u0440\u0445\u0438\u0432"}
+            </button>
+          </div>
+          {archiveAction ? (
+            <div className="archive-confirm">
+              <div>
+                <b>{archiveAction === "clear-memory" ? "Очистить память архива?" : "Удалить весь архив?"}</b>
+                <p>{archiveAction === "clear-memory"
+                  ? "Карточки проектов и сессий останутся, но все реплики и токены внутри архивных сессий будут удалены."
+                  : "Архивные проекты, сессии и их память будут удалены без восстановления."}</p>
+              </div>
+              <div className="archive-confirm-actions">
+                <button type="button" disabled={archiveBusy} onClick={() => setArchiveAction(null)}>Отмена</button>
+                <button className="danger-button" type="button" disabled={archiveBusy} onClick={() => void confirmArchiveAction()}>
+                  {archiveAction === "clear-memory" ? "Да, очистить" : "Да, удалить"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {archiveNotice ? <p className="archive-notice">{archiveNotice}</p> : null}
+          <div className="library-list">
+            {archiveCount === 0 ? <p className="small-muted archive-empty">{"\u0410\u0440\u0445\u0438\u0432 \u043f\u0443\u0441\u0442"}</p> : null}
+            {archiveItems.map((item) => renderLibraryCard({
+              key: item.kind + item.id,
+              title: item.title,
+              meta: item.meta,
+              actionLabel: "\u0412\u0435\u0440\u043d\u0443\u0442\u044c",
+              muted: true,
+              onAction: () => item.kind === "project" ? restoreAndOpenProject(item.id) : restoreAndOpenSession(item.id),
+            }))}
+          </div>
+        </section>
+      );
+    }
+
+    return null;
   }
 
   return (
@@ -145,7 +358,7 @@ export function ChatScreen() {
           <div className="panel-title">Проекты</div>
           <button className="mini-action" type="button" onClick={() => createProject()}>+</button>
         </div>
-        {activeProjects.map((project) => (
+        {activeProjects.slice(0, 3).map((project) => (
           <div className={project.id === activeProjectId ? "session-row project-pill active" : "session-row project-pill"} key={project.id}>
             <button className="pill-main" type="button" onClick={() => selectProject(project.id)}>
               <span>{project.title}</span>
@@ -154,6 +367,11 @@ export function ChatScreen() {
             <button className="pill-action" type="button" title="Переместить проект в архив" onClick={() => archiveProject(project.id)}>Архив</button>
           </div>
         ))}
+        {activeProjects.length > 0 ? (
+          <button className="thin-more" type="button" onClick={() => setLibraryView("projects")}>
+            Показать все проекты · {activeProjects.length}
+          </button>
+        ) : null}
         <button className="session-pill create-pill" type="button" onClick={() => createProject()}>
           Новый проект
           <small>создать вкладку проекта</small>
@@ -165,7 +383,7 @@ export function ChatScreen() {
         </div>
         {!activeProject ? <p className="small-muted archive-empty">Создайте или восстановите проект</p> : null}
         {activeProject && projectSessions.length === 0 ? <p className="small-muted archive-empty">Активных сессий нет</p> : null}
-        {projectSessions.map((item) => (
+        {projectSessions.slice(0, 3).map((item) => (
           <div className={item.id === activeSessionId ? "session-row active" : "session-row"} key={item.id}>
             <button className="pill-main" type="button" onClick={() => selectSession(item.id)}>
               <span>{item.title}</span>
@@ -174,43 +392,52 @@ export function ChatScreen() {
             <button className="pill-action" type="button" title="Переместить сессию в архив" onClick={() => archiveSession(item.id)}>Архив</button>
           </div>
         ))}
+        {projectSessions.length > 0 ? (
+          <button className="thin-more" type="button" onClick={() => setLibraryView("sessions")}>
+            Показать все сессии · {projectSessions.length}
+          </button>
+        ) : null}
         <button className="session-pill create-pill" type="button" disabled={!activeProject} onClick={() => createSession()}>
           Новая сессия
           <small>{activeProject ? activeProject.title : "выберите проект"}</small>
         </button>
         <div className="panel-heading spaced">
           <div className="panel-title">Архив</div>
-          <small>{archivedProjects.length + archivedSessions.length}</small>
+          <small>{archiveCount}</small>
         </div>
-        {archivedProjects.length === 0 && archivedSessions.length === 0 ? <p className="small-muted archive-empty">Архив пуст</p> : null}
-        {archivedProjects.map((project) => (
-          <div className="session-row archive-row" key={project.id}>
-            <div className="pill-main static">
-              <span>{project.title}</span>
-              <small>{projectArchiveMeta(project.id)}</small>
-            </div>
-            <button className="pill-action restore" type="button" title="Восстановить проект" onClick={() => restoreProject(project.id)}>Вернуть</button>
-          </div>
-        ))}
-        {archivedSessions.map((item) => (
-          <div className="session-row archive-row" key={item.id}>
+        {archiveCount === 0 ? <p className="small-muted archive-empty">{"\u0410\u0440\u0445\u0438\u0432 \u043f\u0443\u0441\u0442"}</p> : null}
+        {archivePreviewItems.map((item) => (
+          <div className="session-row archive-row" key={item.kind + item.id}>
             <div className="pill-main static">
               <span>{item.title}</span>
-              <small>сессия · {projectTitle(item.projectId)}</small>
+              <small>{item.meta}</small>
             </div>
-            <button className="pill-action restore" type="button" title="Восстановить сессию" onClick={() => restoreSession(item.id)}>Вернуть</button>
+            <button className="pill-action restore" type="button" title={"\u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c"} onClick={() => item.kind === "project" ? restoreAndOpenProject(item.id) : restoreAndOpenSession(item.id)}>{"\u0412\u0435\u0440\u043d\u0443\u0442\u044c"}</button>
           </div>
         ))}
+        {archiveCount > 0 ? (
+          <button className="thin-more" type="button" onClick={() => setLibraryView("archive")}>
+            {"\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u0432\u0435\u0441\u044c \u0430\u0440\u0445\u0438\u0432 \u00b7 "}{archiveCount}
+          </button>
+        ) : null}
         <div className="panel-title spaced">Команда</div>
         {agents.map((agent) => <div className="agent-mini" key={agent.id}><RoleBadge role={agent.role} /><span>{agent.name}</span></div>)}
       </aside>
       <section className="conversation-panel">
+        {libraryView !== "chat" ? renderLibraryPanel() : (
+        <>
         <div className="chat-toolbar">
           <button className={session.mode === "planning" ? "chip-button on" : "chip-button"} type="button" disabled={!canChat} onClick={() => setSessionMode("planning")}>Planning</button>
           <button className={session.mode === "chat" ? "chip-button on" : "chip-button"} type="button" disabled={!canChat} onClick={() => setSessionMode("chat")}>Chat</button>
           <span><i className="ti ti-coin" aria-hidden="true" /> {session.tokensUsed.toLocaleString("ru-RU")} / {session.tokenBudget.toLocaleString("ru-RU")}</span>
         </div>
-        <div className="message-list">
+        {latestSystemMessage ? (
+          <div className="pinned-system-message">
+            <span>{"\u0421\u0438\u0441\u0442\u0435\u043c\u0430"}</span>
+            <p>{latestSystemMessage.text}</p>
+          </div>
+        ) : null}
+        <div className="message-list" ref={messageListRef}>
           {showTaskGuard ? (
             <div className="task-guard-card pulse-cta">
               <b>Сначала отправьте задачу</b>
@@ -225,7 +452,7 @@ export function ChatScreen() {
           ) : session.messages.map((message) => (
             <MessageItem key={message.id} message={message} author={messageAuthorLabel(message)} />
           ))}
-          {busy ? <TeamThinking agents={agents} /> : null}
+          {busy ? <TeamThinking agents={agents} mode={activeRunMode ?? "planning"} projectTitle={activeProject?.title} /> : null}
           {!busy && showDebateSummary ? (
             <DebateSummary artifact={artifact} roles={debateRoles} onGoToBuild={() => setScreen("build")} />
           ) : null}
@@ -250,6 +477,8 @@ export function ChatScreen() {
           <button className="primary" type="submit" disabled={busy || !prompt.trim() || !canChat}>{busy ? "…" : "Отправить"}</button>
           <button type="button" onClick={() => setScreen("build")}>К решению</button>
         </form>
+        </>
+        )}
       </section>
       <aside className="right-panel">
         <div className="panel-title">Активные агенты</div>

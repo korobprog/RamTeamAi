@@ -1,8 +1,8 @@
 import { isTauriRuntime, safeInvoke } from "../lib/tauri";
 import type { AgentConfig, BuildResult, ImplementationAssignment, PlanArtifact } from "../types";
-import { hasWebWorkspaceFolder, initWorkspaceFiles, writeWebWorkspaceFile } from "../workspace";
+import { hasWebWorkspaceFolder, initWorkspaceFiles, writeWebWorkspaceFile, writeWorkspaceTextFile } from "../workspace";
 
-const WORKSPACE_BUILD_FILES = ["MEMORY.md", "PLAN.md", "README.md", "docs/plan.md", "src/.gitkeep", "tests/.gitkeep"];
+const WORKSPACE_BUILD_FILES = ["MEMORY.md", "PLAN.md", "README.md", "IMPLEMENTATION.md", "docs/plan.md", "docs/agent-tasks.md", "src/.gitkeep", "tests/.gitkeep"];
 const APP_BUILD_FILES = [
   "src/providers/index.ts",
   "src/orchestrator/index.ts",
@@ -78,6 +78,38 @@ export function planImplementationAssignments(
   });
 }
 
+export function renderImplementationPlan(artifact: PlanArtifact, assignments: ImplementationAssignment[]): string {
+  const taskList = assignments.length
+    ? assignments.map((item, index) => [
+      `### ${index + 1}. ${item.owner} (${item.role})`,
+      item.summary,
+      "",
+      ...item.deliverables.map((deliverable) => `- [ ] ${deliverable}`),
+    ].join("\n")).join("\n\n")
+    : "- [ ] Синхронизировать следующий шаг реализации";
+
+  return `# Implementation
+
+Проект: ${artifact.title}
+
+## Правило режима реализации
+
+- Не обсуждать по кругу: каждый раунд должен давать конкретные изменения файлов или проверяемый блок кода.
+- Если агент не может записать файл сам, он обязан вернуть точный путь, действие и код/diff.
+- После каждого блока обновлять этот файл и \`PLAN.md\`.
+
+## Следующие задачи агентам
+
+${taskList}
+
+## Проверки
+
+- [ ] Запустить доступную сборку/линт/тесты.
+- [ ] Проверить, что изменённые файлы находятся в выбранной рабочей папке.
+- [ ] Зафиксировать блокеры и следующий конкретный шаг.
+`;
+}
+
 export async function buildProject(
   artifact: PlanArtifact,
   confirmed: boolean,
@@ -87,15 +119,7 @@ export async function buildProject(
     return buildProjectInWeb(artifact, confirmed, workspacePath);
   }
 
-  return safeInvoke<BuildResult>("build_project", { artifact, confirmed, workspacePath }, () => ({
-    phase: "scaffold",
-    rootPath: workspacePath || "./generated/RamTeamAi-project",
-    files: previewProjectFiles(artifact, Boolean(workspacePath)),
-    skipped: !confirmed,
-    message: confirmed
-      ? "Frontend fallback: дерево проекта подготовлено. В Tauri runtime Rust-команда запишет файлы на диск."
-      : "Запись пропущена: нужно подтверждение пользователя.",
-  }));
+  return safeInvoke<BuildResult>("build_project", { artifact, confirmed, workspacePath });
 }
 
 async function buildProjectInWeb(
@@ -131,8 +155,15 @@ async function buildProjectInWeb(
   const readmeResult = await writeWebWorkspaceFile("README.md", renderReadme(artifact), { overwrite: false });
   if (readmeResult && !files.includes(readmeResult.path)) files.push(readmeResult.path);
 
+  const rootPath = init.rootPath;
+  const rootPlanResult = await writeWorkspaceTextFile(rootPath, "PLAN.md", renderPlan(artifact), { overwrite: true });
+  if (!files.includes(rootPlanResult.path)) files.push(rootPlanResult.path);
+
   const planResult = await writeWebWorkspaceFile("docs/plan.md", renderPlan(artifact), { overwrite: true });
   if (planResult && !files.includes(planResult.path)) files.push(planResult.path);
+
+  const implementationResult = await writeWorkspaceTextFile(rootPath, "IMPLEMENTATION.md", renderImplementationPlan(artifact, []), { overwrite: true });
+  if (!files.includes(implementationResult.path)) files.push(implementationResult.path);
 
   return {
     phase: "scaffold",

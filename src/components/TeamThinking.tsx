@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { AgentConfig, AgentRole } from "../types";
+import type { AgentConfig, AgentRole, AgentRunMode } from "../types";
 import { roleLabel } from "./RoleBadge";
 
 const roleColor: Record<AgentRole, string> = {
@@ -24,9 +24,42 @@ const rolePhrases: Record<AgentRole, string[]> = {
   tester: ["Пишу smoke-тест", "Регрессию закрыл", "Зелёный билд ✅", "Ещё кейс…"],
 };
 
-export function TeamThinking({ agents }: { agents: AgentConfig[] }) {
+const implementationPhrases: Record<AgentRole, string[]> = {
+  architect: ["Раскладываю проект по полочкам…", "Чертёж держится, кофе тоже", "Стыкую модули без скотча", "Архитектура не падает 👌"],
+  critic: ["Ловлю баги с сачком", "Проверяю, где дракон", "Не даю костылям размножаться", "Edge-case выглянул 👀"],
+  researcher: ["Сверяю доки с реальностью…", "MCP-компас настроен", "Нашёл свежую подсказку", "Источник не убежал ✅"],
+  arbiter: ["Режу круги обсуждений", "Выдаю маршрут без пробок", "Собираю финальный ход", "Стоп болтовне, код вперёд"],
+  coder: ["Пишу код, кот следит", "Уговариваю TypeScript", "Кормлю тесты зелёным", "Хелпер почти не кусается"],
+  security: ["Прячу секреты от гоблинов", "Sandbox на замке", "Проверяю права доступа", "Ключи не светим"],
+  product: ["Делаю, чтобы было понятно", "UX без квеста на 40 минут", "Кнопки не прячутся", "Пользователь не страдает"],
+  tester: ["Тесты идут строем", "Smoke без дыма", "Баг притворился фичей", "Регрессия под присмотром"],
+};
+
+const thinkingCopy: Record<AgentRunMode, { title: string; fallback: string; phrases: Record<AgentRole, string[]> }> = {
+  planning: {
+    title: "Команда обсуждает задачу…",
+    fallback: "Думаю…",
+    phrases: rolePhrases,
+  },
+  implementation: {
+    title: "Работаем над проектом…",
+    fallback: "Делаю полезное…",
+    phrases: implementationPhrases,
+  },
+};
+
+export function TeamThinking({
+  agents,
+  mode = "planning",
+  projectTitle,
+}: {
+  agents: AgentConfig[];
+  mode?: AgentRunMode;
+  projectTitle?: string;
+}) {
   const [tick, setTick] = useState(0);
   const crew = agents.length ? agents : [];
+  const copy = thinkingCopy[mode];
 
   useEffect(() => {
     const id = window.setInterval(() => setTick((value) => value + 1), 1700);
@@ -39,11 +72,11 @@ export function TeamThinking({ agents }: { agents: AgentConfig[] }) {
     <div className="team-thinking" role="status" aria-live="polite">
       <div className="team-thinking-head">
         <span className="team-thinking-spinner" aria-hidden="true" />
-        Команда обсуждает задачу…
+        {mode === "implementation" && projectTitle ? `Работаем над проектом «${projectTitle}»…` : copy.title}
       </div>
       <div className="team-desks">
         {crew.map((agent, index) => {
-          const phrases = rolePhrases[agent.role] ?? ["Думаю…"];
+          const phrases = copy.phrases[agent.role] ?? [copy.fallback];
           const phrase = phrases[(tick + index) % phrases.length];
           const color = roleColor[agent.role] ?? "#534AB7";
           const working = agent.status === "typing" || agent.status === "mcp";
