@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import { isTauriRuntime } from "../lib/tauri";
@@ -60,6 +61,18 @@ export function UpdateNotice() {
 
   async function installUpdate() {
     if (!update) return;
+
+    const confirmed = await confirm(
+      `Будет установлена версия RamTeamAi ${update.version}. Приложение закроется и перезапустится после обновления. Продолжить?`,
+      {
+        title: "Подтвердите обновление",
+        kind: "warning",
+        okLabel: "Да, обновить",
+        cancelLabel: "Отмена",
+      },
+    );
+
+    if (!confirmed) return;
 
     setStatus("downloading");
     setErrorMessage(null);

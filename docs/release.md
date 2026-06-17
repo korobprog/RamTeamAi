@@ -1,11 +1,15 @@
 # Release and updates
 
-This project ships one installer per operating system:
+Проект распространяется как desktop-приложение Tauri для Windows и macOS.
 
-- Windows: `RamTeamAi_*_x64-setup.exe` via Tauri NSIS.
-- macOS: `RamTeamAi_*.dmg` via Tauri DMG.
+## Целевая схема
 
-Release binaries should be uploaded to GitHub Releases, not committed as normal git blobs.
+- Windows: пользователь скачивает `AppSetup.exe` / `RamTeamAi_*_x64-setup.exe`, устанавливает приложение и дальше обновляется из приложения.
+- macOS: пользователь скачивает `RamTeamAi_*.dmg`, переносит приложение в Applications и дальше обновляется из приложения. CI собирает universal DMG для Apple Silicon и Intel Mac.
+- Обновление всегда требует подтверждения пользователя: кнопка **Обновить** открывает подтверждающий диалог, только после этого начинается загрузка и установка.
+- Apple Developer ID и notarization для macOS на текущем этапе не используются.
+
+> Важно: без Developer ID/notarization macOS может показывать предупреждения безопасности при первом запуске или после скачивания. Это ожидаемый компромисс выбранной схемы.
 
 ## Version
 
@@ -29,7 +33,27 @@ git tag v0.1.1
 git push origin v0.1.1
 ```
 
-## Updater signing key
+## Build installers
+
+Windows NSIS installer:
+
+```powershell
+npm run release:windows
+```
+
+macOS DMG:
+
+```bash
+npm run release:mac
+```
+
+Build outputs are under:
+
+```text
+src-tauri/target/release/bundle/
+```
+
+## Updater endpoint
 
 The app is configured to check updates from:
 
@@ -37,13 +61,24 @@ The app is configured to check updates from:
 https://github.com/korobprog/RamTeamAi_app/releases/latest/download/latest.json
 ```
 
-The public updater key is stored in `src-tauri/tauri.conf.json`.
+Tauri uses this file to decide whether a newer version is available.
+
+## Updater signing key
+
+Updater signing is required so the installed app trusts downloaded update artifacts.
+
+The public updater key is stored in:
+
+```text
+src-tauri/tauri.conf.json
+```
+
 The private key must never be committed.
 
 For this workspace the private key was generated at:
 
 ```text
-C:\Users\makst\.tauri\RamTeamAi-updater.key
+C:\Users\makst\.tauri\neurogate-updater.key
 ```
 
 Back it up. If the private key is lost, already installed apps will not trust future update packages.
@@ -70,7 +105,7 @@ Add these repository secrets before publishing:
 On Windows, copy the private key text with:
 
 ```powershell
-Get-Content -Raw "$env:USERPROFILE\.tauri\RamTeamAi-updater.key"
+Get-Content -Raw "$env:USERPROFILE\.tauri\neurogate-updater.key"
 ```
 
 Do not paste the private key into code, docs, commits, chats, issues, or release notes.
@@ -88,39 +123,55 @@ It builds:
 
 The GitHub Release is created as a draft. Review the assets and publish it manually.
 
-## Local builds
-
-Windows:
-
-```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH="$env:USERPROFILE\.tauri\RamTeamAi-updater.key"
-npm run release:windows
-```
-
-macOS:
-
-```bash
-export TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME/.tauri/RamTeamAi-updater.key"
-npm run release:mac
-```
-
-Build outputs are under:
-
-```text
-src-tauri/target/release/bundle/
-```
-
 ## User update flow
 
-On app startup the frontend calls the Tauri updater.
+1. Приложение запускается.
+2. Frontend вызывает Tauri updater и проверяет `latest.json`.
+3. Если доступна новая версия, показывается баннер:
+   - версия обновления;
+   - текущая версия;
+   - changelog, если он есть;
+   - кнопки **Обновить** и **Позже**.
+4. Пользователь нажимает **Обновить**.
+5. Приложение показывает системный диалог подтверждения.
+6. Если пользователь подтверждает:
+   - обновление скачивается;
+   - показывается прогресс;
+   - обновление устанавливается;
+   - приложение перезапускается.
+7. Если пользователь отменяет, установка не начинается.
 
-If `latest.json` contains a version newer than the installed version, RamTeamAi shows an update banner. The user can click **Обновить**, then the app downloads, installs, and relaunches.
+## macOS without Developer ID/notarization
 
-## Code signing
+На текущем этапе выбран прямой вариант распространения:
 
-Updater signing is not the same as OS code signing.
+```text
+сайт/GitHub Release → скачать .dmg → установить → обновлять из приложения
+```
 
-For fewer warnings in production, also plan:
+Не делаем:
 
-- Windows: Authenticode certificate.
-- macOS: Apple Developer ID signing and notarization.
+- Apple Developer ID signing;
+- notarization;
+- публикацию в Mac App Store;
+- App Store Connect.
+
+Ожидаемые ограничения:
+
+- macOS Gatekeeper может попросить пользователя вручную подтвердить запуск;
+- доверие пользователя ниже, чем у notarized-приложения;
+- для публичного коммерческого релиза позже желательно вернуться к Developer ID/notarization.
+
+## Code signing scope
+
+Updater signing and OS code signing are different things.
+
+Используем сейчас:
+
+- Tauri updater signing — да, обязательно для обновлений.
+
+Не используем сейчас:
+
+- Windows Authenticode certificate;
+- macOS Developer ID;
+- macOS notarization.

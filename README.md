@@ -176,6 +176,12 @@ npx tauri build    # собрать desktop-приложение
 
 ## Релизы и обновления
 
+### Таблица версий
+
+| Версия | Дата | Что сделано | Артефакты |
+| --- | --- | --- | --- |
+| `0.1.0` | 2026-06-17 | Подготовлена desktop-сборка для Windows и macOS; добавлен Tauri updater; обновление запускается только после подтверждения пользователя; зафиксирован процесс релиза без Apple Developer ID/notarization. | Windows `AppSetup.exe` / NSIS installer, macOS `.dmg` |
+
 - Windows публикуем как NSIS installer: `npm run release:windows`.
 - macOS публикуем как DMG: `npm run release:mac`.
 - Версию синхронизируем командой `npm run version:set -- 0.1.1`.
