@@ -21,9 +21,9 @@ jobs:
       matrix:
         include:
           - platform: windows-latest
-            args: "--bundles nsis"
+            args: "--bundles nsis --config src-tauri/tauri.release-no-updater.json"
           - platform: macos-latest
-            args: "--target universal-apple-darwin --bundles dmg"
+            args: "--target universal-apple-darwin --bundles dmg --config src-tauri/tauri.release-no-updater.json"
 
     runs-on: ${{ matrix.platform }}
 
