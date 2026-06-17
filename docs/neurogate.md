@@ -1,39 +1,50 @@
-# NeuroGate
+# RamTeamAi
 
-## Актуальная линейка моделей
+## Линейка моделей и формат API
 
-| Модель | Коэффициент |
-| --- | ---: |
-| DeepSeek v4 Flash | 0.2x |
-| MiMo v2.5 | 0.2x |
-| Qwen3.7 Plus | 0.8x |
-| MiMo v2.5 Pro | 1x |
-| MiniMax M3 | 1x |
-| DeepSeek V4 Pro | 1x |
-| GPT-5.4-mini | 1.2x |
-| Kimi K2.6 | 2.8x |
-| Qwen3.7 Max | 3.5x |
-| GPT-5.4 | 3.5x |
-| GLM-5.1 | 3.7x |
-| GPT-5.5 | 5x |
+| Модель | Формат API | Коэффициент |
+| --- | --- | ---: |
+| DeepSeek v4 Flash | Chat Completions API | 0.2x |
+| MiMo v2.5 | Chat Completions API | 0.2x |
+| Qwen3.7 Plus | Anthropic API | 0.8x |
+| MiMo v2.5 Pro | Chat Completions API | 1x |
+| MiniMax M3 | Anthropic API | 1x |
+| DeepSeek V4 Pro | Chat Completions API | 1x |
+| GPT-5.4-mini | Responses API | 1.2x |
+| Kimi K2.6 | Chat Completions API | 2.8x |
+| Qwen3.7 Max | Anthropic API | 3.5x |
+| GPT-5.4 | Responses API | 3.5x |
+| GLM-5.1 | Chat Completions API | 3.7x |
+| GPT-5.5 | Responses API | 5x |
 
-## URL-ы
+## URL и маршрутизация
 
-- Для OpenAI-compatible Chat Completions в Neurogate: `https://api.neurogate.space/v1`.
-- Для Claude Code / Desktop IDE от Anthropic: `ANTHROPIC_BASE_URL=https://api.neurogate.space` — без `/v1`, потому что Claude Code добавляет `/v1` автоматически.
+Встроенный провайдер RamTeamAi в приложении использует общий Base URL:
 
-## Claude Code
+```text
+https://api.RamTeamAi.space/v1
+```
 
-Разовый запуск:
+Адаптер выбирает endpoint по выбранной модели:
+
+- Chat Completions API → `POST /chat/completions`
+- Anthropic API → `POST /messages`
+- Responses API → `POST /responses`
+
+Для Responses API приложение отправляет `store: false`, чтобы не требовать серверного хранения ответа.
+
+## Claude Code / Anthropic-compatible клиенты
+
+Для Claude Code / Desktop IDE от Anthropic обычно указывают base URL без `/v1`, потому что клиент Anthropic добавляет `/v1` сам:
 
 ```bash
-export ANTHROPIC_BASE_URL="https://api.neurogate.space"
+export ANTHROPIC_BASE_URL="https://api.RamTeamAi.space"
 export ANTHROPIC_API_KEY="xxxxx"
 claude
 ```
 
 ```powershell
-$env:ANTHROPIC_BASE_URL = "https://api.neurogate.space"
+$env:ANTHROPIC_BASE_URL = "https://api.RamTeamAi.space"
 $env:ANTHROPIC_API_KEY = "xxxxx"
 claude
 ```

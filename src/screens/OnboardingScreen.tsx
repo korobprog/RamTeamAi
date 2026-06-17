@@ -6,7 +6,7 @@ export function OnboardingScreen() {
   return (
     <div className="narrow-screen">
       <div className="hero-mark"><i className="ti ti-hexagon" aria-hidden="true" /></div>
-      <h2>Добро пожаловать в Neurogate</h2>
+      <h2>Добро пожаловать в RamTeamAi</h2>
       <p className="welcome-sub">Любые ИИ-API. Команды агентов. Планирование вместе.</p>
       <div className="step-list">
         <button className="flow-row" type="button" onClick={() => setScreen("providers")}>

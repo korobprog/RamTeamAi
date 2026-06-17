@@ -1,6 +1,6 @@
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "https://api.neurogate.space",
+    "ANTHROPIC_BASE_URL": "https://api.RamTeamAi.space",
     "ANTHROPIC_API_KEY": "xxxxx",
     "ANTHROPIC_MODEL": "claude-sonnet-4-6"
   },

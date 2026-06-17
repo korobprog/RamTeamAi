@@ -8,3 +8,7 @@ src-tauri/target/
 !.claude/settings.example.json
 .DS_Store
 *.log
+*.key
+*.key.pub
+release/artifacts/
+release/private/

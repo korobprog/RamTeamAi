@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { SectionTitle, Chip } from "../components/FNeurogatee";
+import { SectionTitle, Chip } from "../components/FRamTeamAie";
 import { useAppStore } from "../store/appStore";
 import type { TopologyKind } from "../types";
 
@@ -51,7 +51,8 @@ export function TopologyScreen() {
   const topology = useAppStore((state) => state.topology);
   const agents = useAppStore((state) => state.agents);
   const setTopology = useAppStore((state) => state.setTopology);
-  const runTeam = useAppStore((state) => state.runTeam);
+  const startTeam = useAppStore((state) => state.startTeam);
+  const busy = useAppStore((state) => state.busy);
 
   return (
     <div className="screen-stack">
@@ -69,7 +70,7 @@ export function TopologyScreen() {
       <div className="topology-controls">
         <label>Макс. раундов<input type="number" min={1} max={20} value={topology.maxRounds} onChange={(event) => setTopology({ maxRounds: Number(event.target.value) })} /></label>
         <label>Арбитр<select value={topology.arbiterAgentId} onChange={(event) => setTopology({ arbiterAgentId: event.target.value })}>{agents.map((agent) => <option value={agent.id} key={agent.id}>{agent.name}</option>)}</select></label>
-        <button className="primary" type="button" onClick={() => void runTeam()}>Запустить команду</button>
+        <button className="primary" type="button" disabled={busy} onClick={() => void startTeam()}>{busy ? "Запускаем…" : "Запустить команду"}</button>
       </div>
     </div>
   );

@@ -38,7 +38,7 @@ Follow the conventions of the language introduced. Keep formatting automated whe
 
 Add tests with each functional change. Test files should mirror the source layout and use clear names such as `test_<module>.py`, `<module>.test.ts`, or `<module>.spec.ts`.
 
-Document any coverage targets once a test fNeurogateework is selected. Until then, prioritize meaningful unit tests for business logic and integration tests for external boundaries.
+Document any coverage targets once a test fRamTeamAiework is selected. Until then, prioritize meaningful unit tests for business logic and integration tests for external boundaries.
 
 ## Commit & Pull Request Guidelines
 
