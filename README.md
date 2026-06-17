@@ -180,7 +180,7 @@ npx tauri build    # собрать desktop-приложение
 
 | Версия | Дата | Что сделано | Артефакты |
 | --- | --- | --- | --- |
-| `0.1.0` | 2026-06-17 | Подготовлена desktop-сборка для Windows и macOS; добавлен Tauri updater; обновление запускается только после подтверждения пользователя; зафиксирован процесс релиза без Apple Developer ID/notarization. | Windows `AppSetup.exe` / NSIS installer, macOS `.dmg` |
+| `0.1.0` | 2026-06-17 | Подготовлена desktop-сборка для Windows и macOS; добавлен Tauri updater; обновление запускается только после подтверждения пользователя; зафиксирован процесс релиза без Apple Developer ID/notarization. | Windows: [скачать AppSetup.exe](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.0/AppSetup.exe) / NSIS installer, macOS `.dmg` |
 
 - Windows публикуем как NSIS installer: `npm run release:windows`.
 - macOS публикуем как DMG: `npm run release:mac`.
@@ -204,4 +204,3 @@ npx tauri build    # собрать desktop-приложение
 - Project Builder требует явного подтверждения пользователя перед записью файлов.
 - История сообщений хранится в SQLite в app data директории.
 - Не коммитьте реальные ключи, `.env` с секретами, приватные сертификаты и локальные конфиги.
-
