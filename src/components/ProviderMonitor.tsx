@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Chip } from "./FRamTeamAie";
-import type { ProviderConfig, ProviderQuotaWindow } from "../types";
+import type { ProviderConfig } from "../types";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -12,16 +12,6 @@ function formatTokenAmount(value: number): string {
   return String(Math.round(value));
 }
 
-function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "сейчас";
-  const days = Math.floor(ms / DAY_MS);
-  const hours = Math.floor((ms % DAY_MS) / HOUR_MS);
-  const minutes = Math.max(0, Math.floor((ms % HOUR_MS) / MINUTE_MS));
-  if (days > 0) return days + "д " + hours + "ч";
-  if (hours > 0) return hours + "ч " + minutes + "м";
-  return minutes + "м";
-}
-
 function formatAge(iso: string | undefined, now: number): string {
   if (!iso) return "нет данных";
   const ageMs = now - Date.parse(iso);
@@ -31,43 +21,18 @@ function formatAge(iso: string | undefined, now: number): string {
   return Math.floor(ageMs / DAY_MS) + "д назад";
 }
 
-function quotaState(window: ProviderQuotaWindow): { remaining: number; percent: number; tone: "ok" | "warning" | "danger" } {
-  const limit = Math.max(1, window.limitTokens);
-  const remaining = Math.max(0, limit - Math.max(0, window.usedTokens));
-  const percent = Math.max(0, Math.min(100, (remaining / limit) * 100));
-  return {
-    remaining,
-    percent,
-    tone: percent < 15 ? "danger" : percent < 35 ? "warning" : "ok",
-  };
-}
-
 function statusText(provider: ProviderConfig): string {
   if (provider.status === "connected") return "онлайн";
   if (provider.status === "warning") return "проверить";
   return "нет ключа";
 }
 
-function ProviderQuotaRow({ window, now }: { window: ProviderQuotaWindow; now: number }) {
-  const state = quotaState(window);
-  return (
-    <div className={"provider-quota-row " + state.tone}>
-      <div className="provider-quota-line">
-        <span>{window.label}</span>
-        <span>остаток <strong>{formatTokenAmount(state.remaining)}</strong></span>
-        <span>{formatDuration(Date.parse(window.resetsAt) - now)}</span>
-      </div>
-      <div className="provider-quota-track" aria-label={"Остаток " + window.label}>
-        <i style={{ width: state.percent + "%" }} />
-      </div>
-    </div>
-  );
-}
-
 function ProviderMonitorCard({ provider, now, onRefresh }: { provider: ProviderConfig; now: number; onRefresh: (providerId: string) => void }) {
   const monitoring = provider.monitoring;
-  const errorRate = monitoring?.requestCount ? Math.round((monitoring.errorCount / monitoring.requestCount) * 100) : 0;
-  const windows = monitoring?.windows ?? [];
+  const requestCount = monitoring?.requestCount ?? 0;
+  const errorRate = requestCount ? Math.round((monitoring!.errorCount / requestCount) * 100) : 0;
+  const tokensUsed = monitoring?.tokensUsed ?? 0;
+  const hasActivity = requestCount > 0 || tokensUsed > 0;
 
   return (
     <article className={"provider-monitor-card " + provider.status}>
@@ -77,7 +42,7 @@ function ProviderMonitorCard({ provider, now, onRefresh }: { provider: ProviderC
             <strong>{provider.name}</strong>
             <Chip tone={provider.status === "connected" ? "success" : provider.status === "warning" ? "warning" : "default"}>{statusText(provider)}</Chip>
           </div>
-          <small>обн. {formatAge(monitoring?.updatedAt, now)} · {monitoring?.refreshIntervalMin ?? 10}м</small>
+          <small>обн. {formatAge(monitoring?.updatedAt, now)} · обновление {monitoring?.refreshIntervalMin ?? 10}м</small>
         </div>
         <button className="ghost provider-monitor-refresh" type="button" onClick={() => onRefresh(provider.id)} aria-label={"Обновить мониторинг " + provider.name}>
           <i className="ti ti-refresh" aria-hidden="true" />
@@ -86,15 +51,14 @@ function ProviderMonitorCard({ provider, now, onRefresh }: { provider: ProviderC
 
       <div className="provider-monitor-metrics">
         <span><i className="ti ti-activity" aria-hidden="true" /> {provider.latencyMs ? provider.latencyMs + " ms" : "ping —"}</span>
-        <span><i className="ti ti-exchange" aria-hidden="true" /> {monitoring?.requestCount ?? 0} req</span>
+        <span><i className="ti ti-exchange" aria-hidden="true" /> {requestCount} req</span>
         <span><i className="ti ti-alert-triangle" aria-hidden="true" /> {errorRate}% err</span>
+        <span><i className="ti ti-coin" aria-hidden="true" /> {formatTokenAmount(tokensUsed)} ток.</span>
       </div>
 
-      <div className="provider-quota-list">
-        {windows.length
-          ? windows.map((window) => <ProviderQuotaRow key={window.id} window={window} now={now} />)
-          : <small>Лимиты мониторинга ещё не заданы.</small>}
-      </div>
+      {!hasActivity ? (
+        <small className="provider-monitor-empty">Пока нет запросов — метрики появятся после реального обращения к API.</small>
+      ) : null}
     </article>
   );
 }
@@ -121,7 +85,7 @@ export function ProviderMonitor({ providers, onRefresh }: { providers: ProviderC
       <div className="provider-monitor-toolbar">
         <div>
           <h3>Мониторинг провайдеров</h3>
-          <p>Локальные окна лимитов, задержка и ошибки по каждому API.</p>
+          <p>Реальная телеметрия по каждому API: запросы, токены, задержка и ошибки.</p>
         </div>
         <button className="ghost" type="button" onClick={() => onRefresh()}>
           <i className="ti ti-refresh" aria-hidden="true" /> обновить все

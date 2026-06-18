@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 import { Chip, SectionTitle } from "../components/FRamTeamAie";
 import { describeMcpHealth, listAvailableTools } from "../mcp/manager";
 import { useAppStore } from "../store/appStore";
-import type { ScreenId } from "../types";
+import type { ScreenId, ThemePreference } from "../types";
+
+const themeOptions: Array<{ id: ThemePreference; label: string; icon: string; hint: string }> = [
+  { id: "system", label: "Системная", icon: "device-desktop", hint: "как в ОС" },
+  { id: "light", label: "Светлая", icon: "sun", hint: "всегда светлая" },
+  { id: "dark", label: "Тёмная", icon: "moon", hint: "всегда тёмная" },
+];
 
 type SettingsCard = {
   id: string;
@@ -298,6 +304,42 @@ export function SettingsScreen() {
             <small>Включено по умолчанию. В ответе агента будет видно, с какой модели на какую произошло переключение.</small>
           </span>
         </label>
+        <label className="settings-toggle-row">
+          <input
+            type="checkbox"
+            checked={appSettings.autoMode}
+            onChange={(event) => setAppSettings({ autoMode: event.target.checked })}
+          />
+          <span>
+            <b>Авто-режим: дойти до результата без подтверждений</b>
+            <small>Команда сама проходит планирование → каркас → раунды реализации и пишет файлы, пока появляются новые. Лимит раундов: {appSettings.autoMaxRounds}. Тумблер «Авто» есть и в чате.</small>
+          </span>
+        </label>
+      </section>
+
+      <section className="settings-section theme-panel">
+        <div className="settings-section-head">
+          <div>
+            <h3>Тема оформления</h3>
+            <p>Системная следует за настройками ОС. Светлую или тёмную можно зафиксировать вручную — выбор сохраняется. Быстрый переключатель есть в шапке.</p>
+          </div>
+          <Chip tone="info">{themeOptions.find((option) => option.id === appSettings.theme)?.label ?? "Системная"}</Chip>
+        </div>
+        <div className="theme-options">
+          {themeOptions.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              className={appSettings.theme === option.id ? "theme-option on" : "theme-option"}
+              aria-pressed={appSettings.theme === option.id}
+              onClick={() => setAppSettings({ theme: option.id })}
+            >
+              <i className={"ti ti-" + option.icon} aria-hidden="true" />
+              <b>{option.label}</b>
+              <small>{option.hint}</small>
+            </button>
+          ))}
+        </div>
       </section>
 
       <section className="settings-section">

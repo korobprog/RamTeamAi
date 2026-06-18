@@ -32,8 +32,35 @@
   --border-radius-xl: 16px;
 }
 
+/* Dark palette. Applied when the user explicitly picks dark (data-theme="dark")
+   or when no explicit choice is set (data-theme absent = "system") and the OS
+   prefers dark. An explicit light choice (data-theme="light") keeps the :root
+   light values above even on a dark OS. */
+:root[data-theme="dark"] {
+  --color-background-primary: #1e1e1c;
+  --color-background-secondary: #161614;
+  --color-background-tertiary: #2a2a27;
+  --color-background-info: #0C447C;
+  --color-background-success: #085041;
+  --color-background-warning: #633806;
+  --color-background-danger: #791F1F;
+
+  --color-text-primary: #f2f1ec;
+  --color-text-secondary: #B4B2A9;
+  --color-text-tertiary: #888780;
+  --color-text-info: #B5D4F4;
+  --color-text-success: #9FE1CB;
+  --color-text-warning: #FAC775;
+  --color-text-danger: #F7C1C1;
+
+  --color-border-tertiary: rgba(255,255,255,0.14);
+  --color-border-secondary: rgba(255,255,255,0.26);
+  --color-border-primary: rgba(255,255,255,0.34);
+  --color-border-info: #378ADD;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --color-background-primary: #1e1e1c;
     --color-background-secondary: #161614;
     --color-background-tertiary: #2a2a27;

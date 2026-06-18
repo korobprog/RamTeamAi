@@ -1,6 +1,13 @@
 import type { ReactNode } from "react";
-import type { ScreenId } from "../types";
+import type { ScreenId, ThemePreference } from "../types";
 import { useAppStore } from "../store/appStore";
+
+const themeOrder: ThemePreference[] = ["system", "light", "dark"];
+const themeMeta: Record<ThemePreference, { icon: string; label: string }> = {
+  system: { icon: "device-desktop", label: "Тема: системная" },
+  light: { icon: "sun", label: "Тема: светлая" },
+  dark: { icon: "moon", label: "Тема: тёмная" },
+};
 
 const nav: Array<{ id: ScreenId; label: string }> = [
   { id: "onboarding", label: "Старт" },
@@ -18,8 +25,11 @@ export function FRamTeamAie({ children }: { children: ReactNode }) {
   const setScreen = useAppStore((state) => state.setScreen);
   const busy = useAppStore((state) => state.busy);
   const account = useAppStore((state) => state.account);
+  const theme = useAppStore((state) => state.appSettings.theme);
+  const setAppSettings = useAppStore((state) => state.setAppSettings);
   const profileName = account.github?.name || account.github?.login || "Профиль";
   const profileSubtitle = account.github ? "GitHub @" + account.github.login : "локальный пользователь";
+  const nextTheme = themeOrder[(themeOrder.indexOf(theme) + 1) % themeOrder.length];
 
   return (
     <main className="app-shell">
@@ -43,6 +53,15 @@ export function FRamTeamAie({ children }: { children: ReactNode }) {
               onClick={() => setScreen("settings")}
             >
               <i className="ti ti-settings" aria-hidden="true" />
+            </button>
+            <button
+              className="settings-button theme-button"
+              type="button"
+              aria-label={themeMeta[theme].label + ". Переключить."}
+              title={themeMeta[theme].label + " · нажмите, чтобы переключить"}
+              onClick={() => setAppSettings({ theme: nextTheme })}
+            >
+              <i className={"ti ti-" + themeMeta[theme].icon} aria-hidden="true" />
             </button>
           </div>
           <div className="brand-mark">R</div>

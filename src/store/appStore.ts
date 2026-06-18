@@ -3,13 +3,16 @@ import { openUrl as openExternal } from "@tauri-apps/plugin-opener";
 import { agentsSeed, mcpServersSeed, planArtifactSeed, projectsSeed, providersSeed, sessionSeed, topologySeed } from "../data/seed";
 import { safeInvoke } from "../lib/tauri";
 import { callMcpTool as callMcpToolRequest, formatMcpToolsForPrompt, testMcpConnection } from "../mcp/manager";
+import { applyTheme } from "../lib/theme";
 import { synthesizePlan } from "../orchestrator";
+import { extractWorkspaceFileBlocks } from "../orchestrator/fileBlocks";
+import { selectImplementationAgents } from "../orchestrator/agentSelection";
 import { completeWithProvider, maskSecret, rememberProviderSecret, testProviderConnection } from "../providers";
 import type { CompletionResult, ProviderTestResult } from "../providers";
 import { buildProject, planImplementationAssignments, renderImplementationPlan } from "../projectBuilder";
 import { beginGithubDeviceFlow, disconnectGithub, isGithubConfigured, loadGithubProfile, pollGithubDeviceFlow } from "../integrations/github";
 import { describeFirebaseAuthError, isFirebaseConfigured, loadCloudSettings, loadFirebaseUid, saveCloudSettings, signInFirebaseWithGithubToken, signOutFirebase } from "../integrations/firebase";
-import type { AgentConfig, AgentRunMode, AppSettings, BuildResult, ChatMessage, CloudSettingsSnapshot, GithubTokenPollResult, McpServerConfig, McpServerTestResult, McpToolCallResult, PlanArtifact, ProjectConfig, ProjectGitLink, ProviderConfig, ProviderMonitoringConfig, ProviderQuotaWindow, ScreenId, SessionConfig, TopologyConfig, UserAccountState, WorkspaceInitResult } from "../types";
+import type { AgentConfig, AgentRunMode, AppSettings, BuildResult, ChatMessage, CloudSettingsSnapshot, GithubTokenPollResult, McpServerConfig, McpServerTestResult, McpToolCallResult, MessageAction, PlanArtifact, ProjectConfig, ProjectGitLink, ProviderConfig, ProviderMonitoringConfig, ScreenId, SessionConfig, TopologyConfig, UserAccountState, WorkspaceInitResult } from "../types";
 import { clearStoredWebWorkspaceFolder, initWorkspaceFiles, pickWorkspaceFolder, writeWorkspaceTextFile } from "../workspace";
 
 const PROVIDERS_STORAGE_KEY = "RamTeamAi.providers.v2";
@@ -24,71 +27,22 @@ const ACTIVE_PROJECT_STORAGE_KEY = "RamTeamAi.active-project.v1";
 const ACTIVE_SESSION_STORAGE_KEY = "RamTeamAi.active-session.v1";
 const APP_SETTINGS_STORAGE_KEY = "RamTeamAi.app-settings.v1";
 
-const HOUR_MS = 60 * 60 * 1000;
 const DEFAULT_APP_SETTINGS: AppSettings = {
   modelFallbackEnabled: true,
+  autoMode: false,
+  autoMaxRounds: 4,
+  theme: "system",
 };
 
 const IMPLEMENTATION_ROUND_PROMPT = [
-  "Режим реализации: работаем по утверждённому PLAN.md в выбранной рабочей папке.",
-  "Не обсуждайте задачу по кругу и не возвращайтесь к планированию, если нет реального блокера.",
-  "Каждый агент действует как разработчик: выбирает 1-3 файла, пишет create/update/delete и возвращает применимый код.",
-  "Чтобы приложение записало код, ставьте строку `Файл: path/to/file` прямо перед fenced code block и давайте полный контент файла или unified diff.",
-  "Если файл уже должен быть создан — напишите его содержимое сейчас. Если нужен тест — укажите команду проверки.",
-  "Запрещено отвечать только словами «нужно сделать». В конце ответа явно перечислите: изменяемые файлы, готовность, блокеры.",
+  "Режим реализации по утверждённому PLAN.md в рабочей папке.",
+  "Не возвращайтесь к обсуждению и планированию. Возьмите конкретные файлы из плана и напишите их ПОЛНЫЙ код прямо сейчас.",
+  "Каждый файл оформляйте отдельной строкой `Файл: путь/к/файлу`, а сразу под ней fenced code block с полным содержимым файла — только так приложение запишет код на диск.",
+  "Не описывайте файлы словами и не откладывайте «на следующую итерацию». Ответ без блоков `Файл:` + код не принимается.",
 ].join("\n");
-
-function quotaPresets(provider: ProviderConfig): Array<{ id: string; label: string; hours: number; limitTokens: number }> {
-  if (provider.kind === "RamTeamAi") {
-    return [
-      { id: "burst", label: "5ч", hours: 5, limitTokens: 100_000_000 },
-      { id: "week", label: "7д", hours: 24 * 7, limitTokens: 200_000_000 },
-    ];
-  }
-
-  if (provider.kind === "ollama") {
-    return [
-      { id: "session", label: "сессия", hours: 8, limitTokens: 16_000_000 },
-      { id: "day", label: "24ч", hours: 24, limitTokens: 64_000_000 },
-    ];
-  }
-
-  const modelFactor = Math.max(1, provider.models.length);
-  const context = Math.max(16_000, provider.capabilities.maxContext);
-  return [
-    { id: "hour", label: "1ч", hours: 1, limitTokens: context * modelFactor * 4 },
-    { id: "day", label: "24ч", hours: 24, limitTokens: context * modelFactor * 32 },
-  ];
-}
-
-function resetQuotaWindow(window: ProviderQuotaWindow, provider: ProviderConfig, now: number): ProviderQuotaWindow {
-  const preset = quotaPresets(provider).find((item) => item.id === window.id);
-  if (!preset || Date.parse(window.resetsAt) > now) return window;
-  return {
-    ...window,
-    limitTokens: preset.limitTokens,
-    usedTokens: 0,
-    resetsAt: new Date(now + preset.hours * HOUR_MS).toISOString(),
-  };
-}
 
 function ensureProviderMonitoring(provider: ProviderConfig, saved?: ProviderMonitoringConfig): ProviderMonitoringConfig {
   const now = Date.now();
-  const savedWindows = saved?.windows ?? provider.monitoring?.windows ?? [];
-  const windows = quotaPresets(provider).map<ProviderQuotaWindow>((preset) => {
-    const existing = savedWindows.find((window) => window.id === preset.id);
-    const normalized = existing
-      ? { ...existing, label: preset.label, limitTokens: existing.limitTokens || preset.limitTokens }
-      : {
-        id: preset.id,
-        label: preset.label,
-        limitTokens: preset.limitTokens,
-        usedTokens: 0,
-        resetsAt: new Date(now + preset.hours * HOUR_MS).toISOString(),
-      };
-    return resetQuotaWindow(normalized, provider, now);
-  });
-
   return {
     enabled: saved?.enabled ?? provider.monitoring?.enabled ?? true,
     refreshIntervalMin: saved?.refreshIntervalMin ?? provider.monitoring?.refreshIntervalMin ?? (provider.kind === "ollama" ? 1 : 10),
@@ -96,7 +50,6 @@ function ensureProviderMonitoring(provider: ProviderConfig, saved?: ProviderMoni
     requestCount: saved?.requestCount ?? provider.monitoring?.requestCount ?? 0,
     errorCount: saved?.errorCount ?? provider.monitoring?.errorCount ?? 0,
     tokensUsed: saved?.tokensUsed ?? provider.monitoring?.tokensUsed ?? 0,
-    windows,
   };
 }
 
@@ -108,10 +61,6 @@ function withProviderMonitoring(provider: ProviderConfig, saved?: ProviderConfig
 function updateProviderMonitoring(provider: ProviderConfig, patch: { tokens?: number; latencyMs?: number; failed?: boolean } = {}): ProviderConfig {
   const monitoring = ensureProviderMonitoring(provider, provider.monitoring);
   const tokens = Math.max(0, patch.tokens ?? 0);
-  const windows = monitoring.windows.map((window) => ({
-    ...window,
-    usedTokens: Math.min(window.limitTokens, Math.max(0, window.usedTokens) + tokens),
-  }));
 
   return {
     ...provider,
@@ -123,7 +72,6 @@ function updateProviderMonitoring(provider: ProviderConfig, patch: { tokens?: nu
       requestCount: monitoring.requestCount + (patch.tokens !== undefined || patch.failed !== undefined ? 1 : 0),
       errorCount: monitoring.errorCount + (patch.failed ? 1 : 0),
       tokensUsed: monitoring.tokensUsed + tokens,
-      windows,
     },
   };
 }
@@ -181,6 +129,15 @@ function persistProviders(providers: ProviderConfig[]): void {
   window.localStorage.setItem(PROVIDERS_STORAGE_KEY, JSON.stringify(providers));
 }
 
+// Older saved teams (created before the builder role existed) contain only
+// planning agents. Without an engineer the implementation round never produces
+// file blocks, so we inject the seed coder when none is present.
+function ensureBuilderAgent(agents: AgentConfig[], defaultAgents: AgentConfig[]): AgentConfig[] {
+  if (agents.some((agent) => agent.role === "coder")) return agents;
+  const coder = defaultAgents.find((agent) => agent.role === "coder");
+  return coder ? [...agents, coder] : agents;
+}
+
 function loadAgents(defaultAgents: AgentConfig[]): AgentConfig[] {
   if (typeof window === "undefined") return defaultAgents;
   try {
@@ -193,7 +150,9 @@ function loadAgents(defaultAgents: AgentConfig[]): AgentConfig[] {
       persistAgents(defaultAgents);
       return defaultAgents;
     }
-    return agents;
+    const withBuilder = ensureBuilderAgent(agents, defaultAgents);
+    if (withBuilder.length !== agents.length) persistAgents(withBuilder);
+    return withBuilder;
   } catch {
     return defaultAgents;
   }
@@ -348,39 +307,6 @@ function loadProjects(defaultProjects: ProjectConfig[]): ProjectConfig[] {
   } catch {
     return defaultProjects;
   }
-}
-
-function extractWorkspaceFileBlocks(text: string): Array<{ path: string; content: string }> {
-  const files: Array<{ path: string; content: string }> = [];
-  const lines = text.split(/\r?\n/);
-  let pendingPath: string | undefined;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const pathMatch =
-      line.match(/(?:^|\b)(?:файл|file|path|create|update|создать|обновить)\s*[:：-]\s*`?([^`\s]+)`?/i) ??
-      line.match(/^\s*#{1,5}\s+`?((?:src|tests|docs|assets)\/[^`\s]+|[A-Za-z0-9._-]+\.(?:ts|tsx|js|jsx|json|css|md|py|rs|html))`?/i);
-    if (pathMatch?.[1]) {
-      pendingPath = pathMatch[1].trim();
-      continue;
-    }
-
-    if (!pendingPath || !line.trimStart().startsWith("```")) continue;
-
-    const content: string[] = [];
-    index += 1;
-    while (index < lines.length && !lines[index].trimStart().startsWith("```")) {
-      content.push(lines[index]);
-      index += 1;
-    }
-
-    if (content.length) {
-      files.push({ path: pendingPath, content: content.join("\n") + "\n" });
-    }
-    pendingPath = undefined;
-  }
-
-  return files;
 }
 
 interface CompletionCandidate {
@@ -729,6 +655,8 @@ interface AppState {
   lastBuild?: BuildResult;
   lastWorkspaceInit?: WorkspaceInitResult;
   activeRunMode?: AgentRunMode;
+  lastRunFilesWritten?: number;
+  autoRunning: boolean;
   busy: boolean;
   setScreen: (screen: ScreenId) => void;
   hydrateAccount: () => Promise<void>;
@@ -764,6 +692,7 @@ interface AppState {
   deleteArchive: () => void;
   setSessionMode: (mode: SessionConfig["mode"]) => void;
   runTeam: (prompt?: string, mode?: AgentRunMode) => Promise<void>;
+  runAuto: (prompt?: string) => Promise<void>;
   updateArtifact: (patch: Partial<PlanArtifact>) => void;
   selectWorkspaceFolder: () => Promise<string | undefined>;
   clearWorkspaceFolder: () => void;
@@ -801,6 +730,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   mcpServers: loadMcpServers(mcpServersSeed),
   workspacePath: loadWorkspacePath(),
   activeRunMode: undefined,
+  lastRunFilesWritten: undefined,
+  autoRunning: false,
   busy: false,
   setScreen: (screen) => set({ screen }),
   hydrateAccount: async () => {
@@ -1000,6 +931,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const projects = snapshot.projects.map((project) => ({ ...project }));
       const providers = restoreCloudProviders(snapshot);
       const appSettings = normalizeAppSettings(snapshot.appSettings);
+      applyTheme(appSettings.theme);
       persistProviders(providers);
       persistAgents(snapshot.agents);
       persistAppSettings(appSettings);
@@ -1109,10 +1041,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   refreshProviderMonitoring: (providerId) => set((state) => {
     const providers = state.providers.map((provider) => {
       if (providerId && provider.id !== providerId) return provider;
-      const jitter = provider.latencyMs
-        ? Math.max(1, Math.round(provider.latencyMs * (0.92 + ((Date.now() + provider.id.length) % 17) / 100)))
-        : provider.latencyMs;
-      return updateProviderMonitoring(provider, { latencyMs: jitter });
+      // Re-stamp the "обновлено" time without fabricating metrics — real numbers
+      // only change when an actual request or connection test runs.
+      return { ...provider, monitoring: { ...ensureProviderMonitoring(provider, provider.monitoring), updatedAt: new Date().toISOString() } };
     });
     persistProviders(providers);
     return { providers };
@@ -1135,6 +1066,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setAppSettings: (patch) => set((state) => {
     const appSettings = normalizeAppSettings({ ...state.appSettings, ...patch });
     persistAppSettings(appSettings);
+    if (appSettings.theme !== state.appSettings.theme) applyTheme(appSettings.theme);
     return { appSettings };
   }),
   updateAgent: (agent) => set((state) => {
@@ -1446,7 +1378,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       : undefined;
     const baseMessages = userMessage ? [...session.messages, userMessage] : session.messages;
 
-    const nextMode = trimmedPrompt ? session.mode : "planning";
+    // Once implementation starts the session leaves planning, otherwise the
+    // "К чему пришли" planning summary keeps re-rendering and looks like a reset.
+    const nextMode: SessionConfig["mode"] = mode === "implementation"
+      ? "chat"
+      : trimmedPrompt ? session.mode : "planning";
     const baseSession: SessionConfig = {
       ...session,
       title: trimmedPrompt && isDefaultSessionTitle(session.title) ? derivedTitle : session.title,
@@ -1464,7 +1400,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       : project);
 
-    const activeAgents = topology.kind === "pipeline" ? agents : agents.slice(0, Math.min(agents.length, 3));
+    const activeAgents = topology.kind === "pipeline"
+      ? agents
+      : mode === "implementation"
+        ? selectImplementationAgents(agents, 3)
+        : agents.slice(0, Math.min(agents.length, 3));
     persistProjects(nextProjects);
     persistSessions(nextSessions);
 
@@ -1482,6 +1422,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
 
     const messages: ChatMessage[] = [];
+    let totalFilesWritten = 0;
     for (const agent of activeAgents) {
       set((state) => ({
         agents: state.agents.map((item) => item.id === agent.id
@@ -1494,6 +1435,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       let tokens = 0;
       let latencyMs: number | undefined;
       let attempts: CompletionAttempt[] = [];
+      const actions: MessageAction[] = [];
       try {
         const agentWithMcpContext = agent.tools.includes("mcp")
           ? { ...agent, systemPrompt: agent.systemPrompt + "\n\n" + formatMcpToolsForPrompt(mcpServers) }
@@ -1501,24 +1443,45 @@ export const useAppStore = create<AppState>((set, get) => ({
         const completion = await completeWithModelFallback(providers, agentWithMcpContext, context, mode, appSettings.modelFallbackEnabled);
         attempts = completion.attempts;
         const notice = fallbackNotice(attempts);
+        if (notice) {
+          actions.push({ kind: "fallback", label: "Переключил модель", detail: notice });
+        }
         text = notice ? notice + "\n\n" + completion.result.text : completion.result.text;
         tokens = Math.max(completion.result.tokens, Math.ceil(text.length / 4));
         latencyMs = completion.result.latencyMs;
+        if (agent.tools.includes("mcp")) {
+          actions.push({ kind: "search", label: "Запрос через MCP" });
+        }
         if (mode === "implementation" && implementationRootPath) {
           const fileBlocks = extractWorkspaceFileBlocks(text);
           const writtenFiles: string[] = [];
+          const failedFiles: string[] = [];
           for (const file of fileBlocks.slice(0, 8)) {
             try {
               const writeResult = await writeWorkspaceTextFile(implementationRootPath, file.path, file.content, { overwrite: true });
               writtenFiles.push(writeResult.path);
-            } catch {
-              // Keep the agent response visible even if one proposed file path cannot be written safely.
+              actions.push({ kind: "write", label: writeResult.path });
+            } catch (error) {
+              // Surface the failure so a real folder/permission problem is visible instead of looking like silence.
+              const reason = summarizeAttemptError(error);
+              failedFiles.push(file.path + " — " + reason);
+              actions.push({ kind: "error", label: file.path, detail: reason });
             }
           }
+          totalFilesWritten += writtenFiles.length;
           if (writtenFiles.length) {
             text += "\n\n✅ Записано в рабочую папку: " + writtenFiles.join(", ");
-            tokens = Math.max(tokens, Math.ceil(text.length / 4));
           }
+          if (failedFiles.length) {
+            text += "\n\n⚠️ Не удалось записать файлы: " + failedFiles.join("; ");
+          }
+          if (!fileBlocks.length) {
+            actions.push({ kind: "idle", label: "Код не записан", detail: "Ответ без блока «Файл: путь» + код" });
+            text += "\n\n⚠️ В ответе нет ни одного блока «Файл: путь» + код, поэтому на диск ничего не записано. Папка доступна для записи (план уже записан в неё), проблема в том, что агент описал план вместо кода. Нажмите «Запустить агентов реализации» ещё раз — промпт усилен, чтобы агент вернул сам код.";
+          }
+          tokens = Math.max(tokens, Math.ceil(text.length / 4));
+        } else if (mode === "planning") {
+          actions.push({ kind: "plan", label: "Предложил план" });
         }
       } catch (error) {
         if (error instanceof ModelFallbackError) {
@@ -1535,6 +1498,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         text = "\u041e\u0448\u0438\u0431\u043a\u0430 API: " + (error instanceof Error ? error.message : String(error));
         tokens = Math.max(24, Math.ceil(text.length / 4));
+        actions.length = 0;
+        actions.push({ kind: "error", label: "\u041e\u0448\u0438\u0431\u043a\u0430 API", detail: summarizeAttemptError(error) });
       }
 
       if (attempts.length) {
@@ -1561,6 +1526,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         createdAt: new Date().toISOString(),
         tokens,
         tool: agent.tools.includes("mcp") ? "mcp" : undefined,
+        actions: actions.length ? actions : undefined,
       });
     }
 
@@ -1577,12 +1543,43 @@ export const useAppStore = create<AppState>((set, get) => ({
       return {
         busy: false,
         activeRunMode: undefined,
+        lastRunFilesWritten: mode === "implementation" ? totalFilesWritten : state.lastRunFilesWritten,
         agents: state.agents.map((agent) => ({ ...agent, status: "done" })),
         session,
         sessions,
         artifact: mode === "planning" ? synthesizePlan(nextMessages, state.artifact) : state.artifact,
       };
     });
+  },
+  runAuto: async (prompt = "") => {
+    if (get().busy || get().autoRunning) return;
+
+    // 1. Planning round — adds the user task and synthesizes the plan artifact.
+    await get().runTeam(prompt.trim(), "planning");
+
+    // Respect the toggle: without auto mode this behaves like a normal send.
+    if (!get().appSettings.autoMode) return;
+    // Need a concrete plan before the team can implement anything.
+    if (!get().artifact.steps.length) return;
+
+    set({ autoRunning: true });
+    try {
+      // 2. Scaffold the project and run the first implementation round. This may
+      // bail early if the user cancels the required workspace-folder picker.
+      await get().startAgentImplementation();
+
+      // 3. Keep running implementation rounds while the team writes new files.
+      const maxRounds = Math.max(1, get().appSettings.autoMaxRounds || 1);
+      for (let round = 1; round < maxRounds; round += 1) {
+        if (get().busy) break;
+        // Stop once a round produces no files: either the project is done or the
+        // models went idle, and looping further would just burn tokens.
+        if (!get().lastRunFilesWritten) break;
+        await get().runTeam(IMPLEMENTATION_ROUND_PROMPT, "implementation");
+      }
+    } finally {
+      set({ autoRunning: false });
+    }
   },
   updateArtifact: (patch) => set((state) => ({ artifact: { ...state.artifact, ...patch, edited: true } })),
   selectWorkspaceFolder: async () => {

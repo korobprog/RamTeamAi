@@ -52,14 +52,6 @@ export interface ModelConfig {
   capabilities: CapabilityFlags;
 }
 
-export interface ProviderQuotaWindow {
-  id: string;
-  label: string;
-  limitTokens: number;
-  usedTokens: number;
-  resetsAt: string;
-}
-
 export interface ProviderMonitoringConfig {
   enabled: boolean;
   refreshIntervalMin: number;
@@ -67,7 +59,6 @@ export interface ProviderMonitoringConfig {
   requestCount: number;
   errorCount: number;
   tokensUsed: number;
-  windows: ProviderQuotaWindow[];
 }
 
 export interface AgentConfig {
@@ -82,6 +73,16 @@ export interface AgentConfig {
   status: AgentStatus;
 }
 
+export type MessageActionKind = "write" | "error" | "search" | "plan" | "build" | "fallback" | "idle";
+
+// A compact, human-readable summary of what an agent actually did in a turn —
+// rendered as a chip in the chat, similar to tool-use cards in the Claude app.
+export interface MessageAction {
+  kind: MessageActionKind;
+  label: string;
+  detail?: string;
+}
+
 export interface ChatMessage {
   id: string;
   author: "user" | string;
@@ -90,6 +91,7 @@ export interface ChatMessage {
   createdAt: string;
   tokens: number;
   tool?: ToolKind;
+  actions?: MessageAction[];
 }
 
 export interface ProjectConfig {
@@ -229,8 +231,16 @@ export interface CloudSyncSettings {
   message?: string;
 }
 
+export type ThemePreference = "system" | "light" | "dark";
+
 export interface AppSettings {
   modelFallbackEnabled: boolean;
+  // Auto mode chains planning → scaffold → implementation rounds without manual
+  // confirmation until the team stops producing new files or hits the round cap.
+  autoMode: boolean;
+  autoMaxRounds: number;
+  // "system" follows the OS; "light"/"dark" force the palette.
+  theme: ThemePreference;
 }
 
 export interface UserAccountState {

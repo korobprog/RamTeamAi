@@ -4,6 +4,27 @@ Neurogate — настольный AI-клиент на **Tauri 2 + React + Type
 
 Проект задуман как локальный MVP универсального AI-оркестратора: один интерфейс для провайдеров, кастомных API, ролей агентов, топологий команды, диалога и build-артефакта.
 
+## NeuroGate API и бонус
+
+Проект пишется с поддержкой API **NeuroGate**. По приглашению можно получить **$5 на модели ИИ** с выгодными ценами и очень щедрыми лимитами:
+
+[Получить бонус NeuroGate $5](https://portal.neurogate.space/invite?ref=Rerl3hyx81kZ3IRE)
+
+| Модель | Коэффициент |
+| --- | ---: |
+| DeepSeek v4 Flash | 0.2x |
+| MiMo v2.5 | 0.2x |
+| Qwen3.7 Plus | 0.8x |
+| MiMo v2.5 Pro | 1x |
+| MiniMax M3 | 1x |
+| DeepSeek V4 Pro | 1x |
+| GPT-5.4-mini | 1.2x |
+| Kimi K2.6 | 2.8x |
+| Qwen3.7 Max | 3.5x |
+| GPT-5.4 | 3.5x |
+| GLM-5.1 | 3.7x |
+| GPT-5.5 | 5x |
+
 ## Возможности
 
 - единый реестр провайдеров: Anthropic, OpenAI, Google Gemini, локальный Ollama, Neurogate и кастомные gateway/API;

@@ -5,11 +5,37 @@ import { TeamThinking } from "../components/TeamThinking";
 import { DebateSummary } from "../components/DebateSummary";
 import { describeMcpHealth, listAvailableTools } from "../mcp/manager";
 import { useAppStore } from "../store/appStore";
-import type { AgentRole, ChatMessage } from "../types";
+import type { AgentRole, ChatMessage, MessageAction, MessageActionKind } from "../types";
 
 const COLLAPSE_LIMIT = 360;
 type LibraryView = "chat" | "projects" | "sessions" | "archive";
 type ArchiveAction = "clear-memory" | "delete-archive";
+
+const actionMeta: Record<MessageActionKind, { icon: string; verb: string }> = {
+  write: { icon: "file-pencil", verb: "Записал файл" },
+  error: { icon: "alert-triangle", verb: "Ошибка" },
+  search: { icon: "world-search", verb: "Поиск" },
+  plan: { icon: "list-check", verb: "План" },
+  build: { icon: "package", verb: "Сборка" },
+  fallback: { icon: "arrows-exchange", verb: "Смена модели" },
+  idle: { icon: "alert-circle", verb: "Без кода" },
+};
+
+function ActionChips({ actions }: { actions: MessageAction[] }) {
+  return (
+    <div className="message-actions">
+      {actions.map((action, index) => {
+        const meta = actionMeta[action.kind];
+        return (
+          <span className={"message-action action-" + action.kind} key={index} title={action.detail ?? meta.verb}>
+            <i className={"ti ti-" + meta.icon} aria-hidden="true" />
+            {action.kind === "write" ? <code>{action.label}</code> : <span>{action.label}</span>}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 function MessageItem({ message, author }: { message: ChatMessage; author: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -18,6 +44,7 @@ function MessageItem({ message, author }: { message: ChatMessage; author: string
   return (
     <article className={"message " + (message.agentRole ?? message.author)}>
       <div className="message-author">{author}{message.tool ? <em> · {message.tool}</em> : null}</div>
+      {message.actions?.length ? <ActionChips actions={message.actions} /> : null}
       <p>{shown}</p>
       {isLong ? (
         <button className="message-toggle" type="button" onClick={() => setExpanded((value) => !value)}>
@@ -49,6 +76,10 @@ export function ChatScreen() {
   const session = useAppStore((state) => state.session);
   const mcpServers = useAppStore((state) => state.mcpServers);
   const runTeam = useAppStore((state) => state.runTeam);
+  const runAuto = useAppStore((state) => state.runAuto);
+  const appSettings = useAppStore((state) => state.appSettings);
+  const setAppSettings = useAppStore((state) => state.setAppSettings);
+  const autoRunning = useAppStore((state) => state.autoRunning);
   const createProject = useAppStore((state) => state.createProject);
   const createSession = useAppStore((state) => state.createSession);
   const selectProject = useAppStore((state) => state.selectProject);
@@ -88,6 +119,7 @@ export function ChatScreen() {
   const showDebateSummary = hasUserTask && session.mode === "planning" && agentMessages.length > 0;
   const showTaskGuard = canChat && !hasUserTask && !busy;
   const canRunImplementation = canChat && hasUserTask && (artifact.status === "scaffolded" || artifact.status === "built");
+  const implementationStarted = canRunImplementation && session.mode !== "planning" && agentMessages.length > 0;
   const latestSystemMessage = [...session.messages].reverse().find((message) => message.author === "system");
   const messageListRef = useRef<HTMLDivElement | null>(null);
 
@@ -109,6 +141,10 @@ export function ChatScreen() {
     setPrompt("");
     if (initCommandPattern.test(value)) {
       await initWorkspace(true);
+      return;
+    }
+    if (appSettings.autoMode) {
+      await runAuto(value);
       return;
     }
     await runTeam(value);
@@ -429,8 +465,22 @@ export function ChatScreen() {
         <div className="chat-toolbar">
           <button className={session.mode === "planning" ? "chip-button on" : "chip-button"} type="button" disabled={!canChat} onClick={() => setSessionMode("planning")}>Planning</button>
           <button className={session.mode === "chat" ? "chip-button on" : "chip-button"} type="button" disabled={!canChat} onClick={() => setSessionMode("chat")}>Chat</button>
+          <button
+            className={appSettings.autoMode ? "chip-button on auto-toggle" : "chip-button auto-toggle"}
+            type="button"
+            title="Авто-режим: команда сама доходит до результата без подтверждений (планирование → каркас → раунды реализации)"
+            onClick={() => setAppSettings({ autoMode: !appSettings.autoMode })}
+          >
+            <i className="ti ti-bolt" aria-hidden="true" /> Авто {appSettings.autoMode ? "вкл" : "выкл"}
+          </button>
           <span><i className="ti ti-coin" aria-hidden="true" /> {session.tokensUsed.toLocaleString("ru-RU")} / {session.tokenBudget.toLocaleString("ru-RU")}</span>
         </div>
+        {autoRunning ? (
+          <div className="auto-running-banner">
+            <span className="team-thinking-spinner" aria-hidden="true" />
+            Авто-режим: команда идёт от плана к коду без подтверждений. Можно выключить тумблером «Авто».
+          </div>
+        ) : null}
         {latestSystemMessage ? (
           <div className="pinned-system-message">
             <span>{"\u0421\u0438\u0441\u0442\u0435\u043c\u0430"}</span>
@@ -458,10 +508,12 @@ export function ChatScreen() {
           ) : null}
           {!busy && canRunImplementation ? (
             <div className="chat-implementation-cta pulse-cta">
-              <b>Дальше — запустить работу агентов</b>
-              <p>Нажмите кнопку: агенты перейдут от плана к следующему раунду реализации и напишут, что делать в файлах.</p>
+              <b>{implementationStarted ? "Реализация идёт — это не сброс плана" : "Дальше — запустить работу агентов"}</b>
+              <p>{implementationStarted
+                ? "Раунд завершён, файлы записаны в рабочую папку. Каждый клик запускает следующий раунд: агенты добавляют и правят файлы, прогресс сохраняется на диск."
+                : "Нажмите кнопку: агенты перейдут от плана к реализации и начнут писать файлы в рабочую папку."}</p>
               <button className="primary wide" type="button" onClick={() => void handleRunImplementationRound()}>
-                <i className="ti ti-player-play" aria-hidden="true" /> Запустить работу агентов
+                <i className="ti ti-player-play" aria-hidden="true" /> {implementationStarted ? "Продолжить реализацию" : "Запустить работу агентов"}
               </button>
             </div>
           ) : null}

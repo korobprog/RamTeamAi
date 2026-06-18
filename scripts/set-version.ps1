@@ -17,6 +17,26 @@ function Save-JsonFile {
   Set-Content -Path $Path -Value ($json + "`n") -Encoding utf8
 }
 
+function Replace-First {
+  param(
+    [Parameter(Mandatory = $true)] [string] $Text,
+    [Parameter(Mandatory = $true)] [string] $Pattern,
+    [Parameter(Mandatory = $true)] [string] $Replacement
+  )
+
+  $regex = [System.Text.RegularExpressions.Regex]::new(
+    $Pattern,
+    [System.Text.RegularExpressions.RegexOptions]::Singleline,
+    [TimeSpan]::FromSeconds(5)
+  )
+  $match = $regex.Match($Text)
+  if (-not $match.Success) {
+    return $Text
+  }
+
+  return $Text.Substring(0, $match.Index) + $regex.Replace($match.Value, $Replacement, 1) + $Text.Substring($match.Index + $match.Length)
+}
+
 $packagePath = Join-Path $root "package.json"
 $packageLockPath = Join-Path $root "package-lock.json"
 $tauriConfigPath = Join-Path $root "src-tauri\tauri.conf.json"
@@ -27,12 +47,10 @@ $package.version = $Version
 Save-JsonFile -Path $packagePath -Value $package
 
 if (Test-Path $packageLockPath) {
-  $packageLock = Get-Content -Raw $packageLockPath | ConvertFrom-Json
-  $packageLock.version = $Version
-  if ($packageLock.packages -and $packageLock.packages.PSObject.Properties.Name -contains "") {
-    $packageLock.packages."".version = $Version
-  }
-  Save-JsonFile -Path $packageLockPath -Value $packageLock
+  $packageLock = Get-Content -Raw $packageLockPath
+  $packageLock = Replace-First -Text $packageLock -Pattern '("version"\s*:\s*")[^"]+(")' -Replacement "`${1}$Version`${2}"
+  $packageLock = Replace-First -Text $packageLock -Pattern '(""\s*:\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"version"\s*:\s*")[^"]+(")' -Replacement "`${1}$Version`${2}"
+  Set-Content -Path $packageLockPath -Value $packageLock -Encoding utf8
 }
 
 $tauriConfig = Get-Content -Raw $tauriConfigPath | ConvertFrom-Json
