@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AgentConfig, AgentRole, AgentRunMode } from "../types";
-import { roleLabel } from "./RoleBadge";
+import { roleLabel } from "../lib/roles";
 
 const roleColor: Record<AgentRole, string> = {
   architect: "#534AB7",
@@ -58,8 +58,16 @@ export function TeamThinking({
   projectTitle?: string;
 }) {
   const [tick, setTick] = useState(0);
-  const crew = agents.length ? agents : [];
+  const activeCrew = agents.filter((agent) => agent.status === "typing" || agent.status === "mcp");
+  const crew = activeCrew.length ? activeCrew : agents;
   const copy = thinkingCopy[mode];
+  const title = crew.length === 1
+    ? mode === "implementation"
+      ? "Агент работает над задачей…"
+      : "Агент отвечает…"
+    : mode === "implementation" && projectTitle
+      ? `Работаем над проектом «${projectTitle}»…`
+      : copy.title;
 
   useEffect(() => {
     const id = window.setInterval(() => setTick((value) => value + 1), 1700);
@@ -72,7 +80,7 @@ export function TeamThinking({
     <div className="team-thinking" role="status" aria-live="polite">
       <div className="team-thinking-head">
         <span className="team-thinking-spinner" aria-hidden="true" />
-        {mode === "implementation" && projectTitle ? `Работаем над проектом «${projectTitle}»…` : copy.title}
+        {title}
       </div>
       <div className="team-desks">
         {crew.map((agent, index) => {

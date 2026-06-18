@@ -79,6 +79,35 @@ describe("extractWorkspaceFileBlocks", () => {
     expect(extractWorkspaceFileBlocks(text)[0].path).toBe("src/main.ts");
   });
 
+  it("recovers the path from a leading comment inside the block", () => {
+    const text = [
+      "Вот компонент:",
+      "```tsx",
+      "// src/App.tsx",
+      "export default function App() {",
+      "  return <main>Hi</main>;",
+      "}",
+      "```",
+    ].join("\n");
+
+    const files = extractWorkspaceFileBlocks(text);
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe("src/App.tsx");
+    // The path marker line must not leak into the written file content.
+    expect(files[0].content).not.toContain("// src/App.tsx");
+    expect(files[0].content).toContain("export default function App()");
+  });
+
+  it("recovers a hash/html path comment too", () => {
+    const text = [
+      "```html",
+      "<!-- index.html -->",
+      "<div id=\"root\"></div>",
+      "```",
+    ].join("\n");
+    expect(extractWorkspaceFileBlocks(text)[0].path).toBe("index.html");
+  });
+
   it("returns nothing for plan-only output (idle agent)", () => {
     const text = [
       "## План",

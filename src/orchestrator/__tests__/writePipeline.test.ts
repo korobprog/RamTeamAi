@@ -95,6 +95,28 @@ describe("implementation write pipeline (parse → real files on disk)", () => {
     expect(existsSync(join(root, "src"))).toBe(false);
   });
 
+  it("edits an existing file by overwriting it with the agent's updated block", async () => {
+    // Round 1 — the agent creates the file.
+    const create = extractWorkspaceFileBlocks(
+      ["Файл: src/middleware.ts", "```ts", "export const version = 1;", "```"].join("\n"),
+    );
+    await writeWorkspaceFile(root, create[0].path, create[0].content);
+    expect(await readFile(join(root, "src/middleware.ts"), "utf8")).toContain("version = 1");
+
+    // Round 2 — the agent returns the SAME path with updated full content. This
+    // is the "edit" case the snapshot feature unlocks: it must replace, not
+    // append or fail.
+    const edit = extractWorkspaceFileBlocks(
+      ["Файл: src/middleware.ts", "```ts", "export const version = 2;", "export const edited = true;", "```"].join("\n"),
+    );
+    await writeWorkspaceFile(root, edit[0].path, edit[0].content);
+
+    const after = await readFile(join(root, "src/middleware.ts"), "utf8");
+    expect(after).toContain("version = 2");
+    expect(after).toContain("edited = true");
+    expect(after).not.toContain("version = 1");
+  });
+
   it("refuses to write a traversal path outside the workspace", async () => {
     // A malicious announcement is dropped at parse time, but assert the write
     // guard also rejects it if one ever slips through.

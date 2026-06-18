@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(windows)]
+use std::path::Path;
 use std::time::Instant;
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::{timeout, Duration};
 
@@ -81,10 +83,21 @@ fn default_schema() -> Value {
 pub fn default_mcp_servers() -> Vec<McpServerConfig> {
     vec![
         McpServerConfig {
-            id: "web-search".into(),
-            name: "Web search MCP".into(),
+            id: "context7".into(),
+            name: "Context7 Docs MCP".into(),
             transport: "http".into(),
-            command_or_url: "http://localhost:3000/mcp".into(),
+            command_or_url: "https://mcp.context7.com/mcp".into(),
+            enabled: false,
+            tools: Vec::new(),
+            status: Some("not-configured".into()),
+            latency_ms: None,
+            last_error: None,
+        },
+        McpServerConfig {
+            id: "web-search".into(),
+            name: "Web fetch MCP".into(),
+            transport: "stdio".into(),
+            command_or_url: "npx -y mcp-fetch-server".into(),
             enabled: false,
             tools: Vec::new(),
             status: Some("not-configured".into()),
@@ -95,7 +108,40 @@ pub fn default_mcp_servers() -> Vec<McpServerConfig> {
             id: "filesystem".into(),
             name: "Filesystem sandbox".into(),
             transport: "stdio".into(),
-            command_or_url: "npx -y @modelcontextprotocol/server-filesystem .".into(),
+            command_or_url: "npx -y @modelcontextprotocol/server-filesystem@2025.12.18 .".into(),
+            enabled: false,
+            tools: Vec::new(),
+            status: Some("not-configured".into()),
+            latency_ms: None,
+            last_error: None,
+        },
+        McpServerConfig {
+            id: "memory".into(),
+            name: "Memory knowledge graph".into(),
+            transport: "stdio".into(),
+            command_or_url: "npx -y @modelcontextprotocol/server-memory".into(),
+            enabled: false,
+            tools: Vec::new(),
+            status: Some("not-configured".into()),
+            latency_ms: None,
+            last_error: None,
+        },
+        McpServerConfig {
+            id: "sequential-thinking".into(),
+            name: "Sequential Thinking".into(),
+            transport: "stdio".into(),
+            command_or_url: "npx -y @modelcontextprotocol/server-sequential-thinking".into(),
+            enabled: false,
+            tools: Vec::new(),
+            status: Some("not-configured".into()),
+            latency_ms: None,
+            last_error: None,
+        },
+        McpServerConfig {
+            id: "playwright".into(),
+            name: "Playwright browser".into(),
+            transport: "stdio".into(),
+            command_or_url: "npx -y @playwright/mcp@latest".into(),
             enabled: false,
             tools: Vec::new(),
             status: Some("not-configured".into()),
@@ -201,6 +247,65 @@ fn parse_command(command: &str) -> Result<(String, Vec<String>), McpError> {
     Ok((program, parts.into_iter().skip(1).collect()))
 }
 
+#[cfg(windows)]
+fn resolve_stdio_program(program: &str) -> String {
+    let path = Path::new(program);
+    if path.extension().is_some() {
+        return program.to_string();
+    }
+
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    let extensions = pathext
+        .split(';')
+        .filter(|extension| !extension.trim().is_empty())
+        .map(|extension| extension.trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
+    if program.contains('\\') || program.contains('/') {
+        for extension in &extensions {
+            let candidate = format!("{program}{extension}");
+            if Path::new(&candidate).is_file() {
+                return candidate;
+            }
+        }
+        return program.to_string();
+    }
+
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            for extension in &extensions {
+                let candidate = dir.join(format!("{program}{extension}"));
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+
+    for base in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+        if let Some(root) = std::env::var_os(base) {
+            let dir = if base == "LOCALAPPDATA" {
+                Path::new(&root).join("Programs").join("nodejs")
+            } else {
+                Path::new(&root).join("nodejs")
+            };
+            for extension in &extensions {
+                let candidate = dir.join(format!("{program}{extension}"));
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+
+    program.to_string()
+}
+
+#[cfg(not(windows))]
+fn resolve_stdio_program(program: &str) -> String {
+    program.to_string()
+}
+
 fn build_initialize_params() -> Value {
     json!({
         "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -226,16 +331,14 @@ fn build_tool_call_params(tool_name: &str, arguments: Value) -> Value {
 }
 
 async fn send_stdio_message(stdin: &mut tokio::process::ChildStdin, message: &Value) -> Result<(), McpError> {
-    let payload = serde_json::to_vec(message)?;
-    let header = format!("Content-Length: {}\r\n\r\n", payload.len());
-    stdin.write_all(header.as_bytes()).await?;
-    stdin.write_all(&payload).await?;
+    let payload = serde_json::to_string(message)?;
+    stdin.write_all(payload.as_bytes()).await?;
+    stdin.write_all(b"\n").await?;
     stdin.flush().await?;
     Ok(())
 }
 
 async fn read_stdio_message(stdout: &mut BufReader<tokio::process::ChildStdout>) -> Result<Value, McpError> {
-    let mut content_length = None;
     loop {
         let mut line = String::new();
         let bytes = stdout.read_line(&mut line).await?;
@@ -245,22 +348,15 @@ async fn read_stdio_message(stdout: &mut BufReader<tokio::process::ChildStdout>)
 
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
-            break;
+            continue;
+        }
+        if !trimmed.starts_with('{') {
+            continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix("Content-Length:") {
-            content_length = Some(rest.trim().parse::<usize>().map_err(|error| McpError::Protocol(error.to_string()))?);
-        }
+        let value: Value = serde_json::from_str(trimmed)?;
+        return Ok(value);
     }
-
-    let Some(content_length) = content_length else {
-        return Err(McpError::Protocol("missing Content-Length header".into()));
-    };
-
-    let mut payload = vec![0_u8; content_length];
-    stdout.read_exact(&mut payload).await?;
-    let value: Value = serde_json::from_slice(&payload)?;
-    Ok(value)
 }
 
 async fn read_stdio_response(stdout: &mut BufReader<tokio::process::ChildStdout>, expected_id: u64) -> Result<Value, McpError> {
@@ -285,7 +381,7 @@ async fn read_stdio_response(stdout: &mut BufReader<tokio::process::ChildStdout>
 
 async fn start_stdio_server(server: &McpServerConfig) -> Result<(Child, BufReader<tokio::process::ChildStdout>, tokio::process::ChildStdin), McpError> {
     let (program, args) = parse_command(&server.command_or_url)?;
-    let mut command = Command::new(program);
+    let mut command = Command::new(resolve_stdio_program(&program));
     command.args(args);
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());

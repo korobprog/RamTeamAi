@@ -1,5 +1,5 @@
 import type { AgentRole, PlanArtifact } from "../types";
-import { roleLabel } from "./RoleBadge";
+import { roleLabel } from "../lib/roles";
 
 export function DebateSummary({
   artifact,

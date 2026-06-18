@@ -59,6 +59,32 @@
   --color-border-info: #378ADD;
 }
 
+/* "Vibe" palette — dark amber terminal look. Always forced via data-theme="vibe".
+   The accent role ("info") is remapped from blue to orange, so active tabs,
+   primary buttons and section icons pick up the neon-amber glow throughout. */
+:root[data-theme="vibe"] {
+  --color-background-primary: #1b1410;
+  --color-background-secondary: #141009;
+  --color-background-tertiary: #0d0a07;
+  --color-background-info: #3a2410;
+  --color-background-success: #1d3318;
+  --color-background-warning: #43290a;
+  --color-background-danger: #46160f;
+
+  --color-text-primary: #f4eadd;
+  --color-text-secondary: #b39c86;
+  --color-text-tertiary: #7e6c5a;
+  --color-text-info: #ff922b;
+  --color-text-success: #7bc25a;
+  --color-text-warning: #ffb454;
+  --color-text-danger: #ff7a66;
+
+  --color-border-tertiary: rgba(255,146,43,0.14);
+  --color-border-secondary: rgba(255,146,43,0.26);
+  --color-border-primary: rgba(255,146,43,0.40);
+  --color-border-info: #ff922b;
+}
+
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     --color-background-primary: #1e1e1c;

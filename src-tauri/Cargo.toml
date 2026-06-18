@@ -6,7 +6,7 @@ authors = ["RamTeamAi contributors"]
 edition = "2021"
 
 [lib]
-name = "RamTeamAi_lib"
+name = "ram_team_ai_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

@@ -41,6 +41,22 @@ export function matchFenceInfoPath(fenceLine: string): string | undefined {
   return undefined;
 }
 
+// Last-resort recovery: a chatty model often drops the announcement and instead
+// writes the path as a comment on the FIRST line inside the code block, e.g.
+// `// src/App.tsx`, `# app/main.py`, `/* src/x.ts */`, `<!-- index.html -->`.
+// Parsing this keeps such answers from being treated as "no code" (which would
+// otherwise burn a recovery slot on an output that was almost correct).
+export function matchPathComment(line: string): string | undefined {
+  const clean = line
+    .trim()
+    .replace(/^(?:\/\/+|#+|;+|--|\/\*|\*|<!--)\s*/, "")
+    .replace(/\s*(?:\*\/|-->)\s*$/, "")
+    .trim();
+  if (!clean || clean.includes(" ")) return undefined;
+  const candidate = clean.replace(/^[`'"]+|[`'"]+$/g, "").trim();
+  return isWorkspaceFilePath(candidate) ? candidate : undefined;
+}
+
 export function extractWorkspaceFileBlocks(text: string): WorkspaceFileBlock[] {
   const files: WorkspaceFileBlock[] = [];
   const lines = text.split(/\r?\n/);
@@ -59,13 +75,23 @@ export function extractWorkspaceFileBlocks(text: string): WorkspaceFileBlock[] {
 
     // Opening fence: resolve the path from the preceding announcement or the
     // fence info string, then consume until the closing fence.
-    const path = pendingPath ?? matchFenceInfoPath(line);
+    let path = pendingPath ?? matchFenceInfoPath(line);
     pendingPath = undefined;
     const content: string[] = [];
     index += 1;
     while (index < lines.length && !lines[index].trimStart().startsWith("```")) {
       content.push(lines[index]);
       index += 1;
+    }
+
+    // No announced/fence path: recover it from a path comment on the first code
+    // line, and drop that marker line so it does not pollute the written file.
+    if (!path && content.length) {
+      const fromComment = matchPathComment(content[0]);
+      if (fromComment) {
+        path = fromComment;
+        content.shift();
+      }
     }
 
     if (path && content.length) {

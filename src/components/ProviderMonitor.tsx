@@ -22,10 +22,24 @@ function formatAge(iso: string | undefined, now: number): string {
 }
 
 function statusText(provider: ProviderConfig): string {
-  if (provider.status === "connected") return "онлайн";
-  if (provider.status === "warning") return "проверить";
-  return "нет ключа";
+  const health = provider.monitoring?.healthStatus;
+  if (health === "ok") return "OK";
+  if (health === "degraded") return "DEGRADED";
+  if (health === "down") return "DOWN";
+  if (health === "rate-limited") return "RATE LIMITED";
+  if (health === "auth-error") return "AUTH ERROR";
+  if (provider.status === "connected") return "online";
+  if (provider.status === "warning") return "online???";
+  return "no key";
 }
+
+function healthTone(provider: ProviderConfig): "default" | "success" | "warning" {
+  const health = provider.monitoring?.healthStatus;
+  if (health === "ok") return "success";
+  if (health === "degraded" || health === "down" || health === "rate-limited" || health === "auth-error") return "warning";
+  return provider.status === "connected" ? "success" : provider.status === "warning" ? "warning" : "default";
+}
+
 
 function ProviderMonitorCard({ provider, now, onRefresh }: { provider: ProviderConfig; now: number; onRefresh: (providerId: string) => void }) {
   const monitoring = provider.monitoring;
@@ -33,6 +47,7 @@ function ProviderMonitorCard({ provider, now, onRefresh }: { provider: ProviderC
   const errorRate = requestCount ? Math.round((monitoring!.errorCount / requestCount) * 100) : 0;
   const tokensUsed = monitoring?.tokensUsed ?? 0;
   const hasActivity = requestCount > 0 || tokensUsed > 0;
+  const circuitOpen = Boolean(monitoring?.circuitOpenUntil && Date.parse(monitoring.circuitOpenUntil) > now);
 
   return (
     <article className={"provider-monitor-card " + provider.status}>
@@ -40,7 +55,7 @@ function ProviderMonitorCard({ provider, now, onRefresh }: { provider: ProviderC
         <div>
           <div className="provider-monitor-title">
             <strong>{provider.name}</strong>
-            <Chip tone={provider.status === "connected" ? "success" : provider.status === "warning" ? "warning" : "default"}>{statusText(provider)}</Chip>
+            <Chip tone={healthTone(provider)}>{statusText(provider)}</Chip>
           </div>
           <small>обн. {formatAge(monitoring?.updatedAt, now)} · обновление {monitoring?.refreshIntervalMin ?? 10}м</small>
         </div>
@@ -54,7 +69,11 @@ function ProviderMonitorCard({ provider, now, onRefresh }: { provider: ProviderC
         <span><i className="ti ti-exchange" aria-hidden="true" /> {requestCount} req</span>
         <span><i className="ti ti-alert-triangle" aria-hidden="true" /> {errorRate}% err</span>
         <span><i className="ti ti-coin" aria-hidden="true" /> {formatTokenAmount(tokensUsed)} ток.</span>
+        {monitoring?.consecutiveFailures ? <span><i className="ti ti-plug-x" aria-hidden="true" /> fail {monitoring.consecutiveFailures}</span> : null}
       </div>
+
+      {circuitOpen ? <small className="provider-monitor-empty">Circuit breaker open until {monitoring?.circuitOpenUntil}.</small> : null}
+      {monitoring?.lastError ? <small className="provider-monitor-empty">online??? online: {monitoring.lastError}</small> : null}
 
       {!hasActivity ? (
         <small className="provider-monitor-empty">Пока нет запросов — метрики появятся после реального обращения к API.</small>
@@ -72,12 +91,13 @@ export function ProviderMonitor({ providers, onRefresh }: { providers: ProviderC
   }, []);
 
   const summary = useMemo(() => {
-    const connected = providers.filter((provider) => provider.status === "connected").length;
+    const connected = providers.filter((provider) => provider.monitoring?.healthStatus === "ok" || provider.status === "connected").length;
+    const ok = providers.filter((provider) => provider.monitoring?.healthStatus === "ok").length;
     const models = providers.reduce((sum, provider) => sum + provider.models.length, 0);
     const latencies = providers.map((provider) => provider.latencyMs).filter((latency): latency is number => typeof latency === "number" && latency > 0);
     const avgLatency = latencies.length ? Math.round(latencies.reduce((sum, latency) => sum + latency, 0) / latencies.length) : undefined;
     const requests = providers.reduce((sum, provider) => sum + (provider.monitoring?.requestCount ?? 0), 0);
-    return { connected, models, avgLatency, requests };
+    return { connected, ok, models, avgLatency, requests };
   }, [providers]);
 
   return (
@@ -93,7 +113,7 @@ export function ProviderMonitor({ providers, onRefresh }: { providers: ProviderC
       </div>
 
       <div className="provider-monitor-summary">
-        <div><span>онлайн</span><strong>{summary.connected}/{providers.length}</strong></div>
+        <div><span>OK / online</span><strong>{summary.ok || summary.connected}/{providers.length}</strong></div>
         <div><span>моделей</span><strong>{summary.models}</strong></div>
         <div><span>средний ping</span><strong>{summary.avgLatency ? summary.avgLatency + " ms" : "—"}</strong></div>
         <div><span>запросов</span><strong>{summary.requests}</strong></div>

@@ -3,12 +3,12 @@
 // persisted app settings; applyTheme reflects it onto <html data-theme> which the
 // CSS variable overrides in design/theme.css key off.
 
-export type ThemePref = "system" | "light" | "dark";
+export type ThemePref = "system" | "light" | "dark" | "vibe";
 
 const APP_SETTINGS_STORAGE_KEY = "RamTeamAi.app-settings.v1";
 
 export function isThemePref(value: unknown): value is ThemePref {
-  return value === "system" || value === "light" || value === "dark";
+  return value === "system" || value === "light" || value === "dark" || value === "vibe";
 }
 
 export function applyTheme(pref: ThemePref): void {

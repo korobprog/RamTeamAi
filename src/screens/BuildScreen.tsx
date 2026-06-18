@@ -15,8 +15,27 @@ export function BuildScreen() {
   const implementProject = useAppStore((state) => state.implementProject);
   const startAgentImplementation = useAppStore((state) => state.startAgentImplementation);
   const lastBuild = useAppStore((state) => state.lastBuild);
+  const lastRunFilesWritten = useAppStore((state) => state.lastRunFilesWritten);
+  const activeRunMode = useAppStore((state) => state.activeRunMode);
   const busy = useAppStore((state) => state.busy);
-  const scaffoldReady = artifact.status === "scaffolded" || artifact.status === "built" || (lastBuild?.phase === "scaffold" && !lastBuild.skipped);
+  const readinessStatus = lastBuild?.readiness?.status;
+  const isPartial = readinessStatus === "partial" || readinessStatus === "failed";
+  const scaffoldReady = !isPartial && (artifact.status === "scaffolded" || artifact.status === "built" || (lastBuild?.phase === "scaffold" && !lastBuild.skipped));
+  const implementationRunning = busy && activeRunMode === "implementation";
+  const implementationDone = artifact.status === "built" || lastRunFilesWritten !== undefined;
+  const agentStepClass = implementationDone
+    ? "flow-step done implemented"
+    : scaffoldReady || implementationRunning
+      ? "flow-step current"
+      : "flow-step";
+  const verifyStepClass = implementationDone ? "flow-step current verify" : "flow-step";
+  const decisionStepClass = implementationDone
+    ? "decision-step implemented"
+    : implementationRunning
+      ? "decision-step implementing"
+      : scaffoldReady
+        ? "decision-step done"
+        : "decision-step";
   const assignments = planImplementationAssignments(artifact, agents);
 
   async function handleSelectWorkspace() {
@@ -47,13 +66,13 @@ export function BuildScreen() {
 
         <div className="implementation-flow">
           <div className="flow-step done"><span>1</span><b>Каркас</b><small>{scaffoldReady ? "готов" : "нужно создать"}</small></div>
-          <div className={scaffoldReady ? "flow-step current" : "flow-step"}><span>2</span><b>Агенты</b><small>запуск реализации</small></div>
-          <div className="flow-step"><span>3</span><b>Проверка</b><small>чат, файлы, тесты</small></div>
+          <div className={agentStepClass}><span>{implementationDone ? <i className="ti ti-check" aria-hidden="true" /> : "2"}</span><b>Агенты</b><small>{implementationDone ? "реализация запущена" : implementationRunning ? "агенты работают" : "запуск реализации"}</small></div>
+          <div className={verifyStepClass}><span>3</span><b>Проверка</b><small>{implementationDone ? "следующий этап" : "чат, файлы, тесты"}</small></div>
         </div>
 
         <div className="decision-steps">
           {artifact.steps.map((step, index) => (
-            <div className={scaffoldReady ? "decision-step done" : "decision-step"} key={step + "-" + index}>
+            <div className={decisionStepClass} key={step + "-" + index}>
               <span className="decision-step-num">{scaffoldReady ? <i className="ti ti-check" aria-hidden="true" /> : index + 1}</span>
               {editing ? (
                 <input
@@ -107,10 +126,18 @@ export function BuildScreen() {
 
         {lastBuild ? (
           <div className="build-result">
-            <Chip tone={lastBuild.skipped ? "warning" : "success"}>
-              {lastBuild.skipped ? "пропущено" : lastBuild.phase === "scaffold" ? "каркас готов" : "готово"}
+            <Chip tone={lastBuild.skipped || isPartial ? "warning" : "success"}>
+              {lastBuild.skipped
+                ? "skipped"
+                : isPartial
+                  ? "partial"
+                  : readinessStatus === "build-ok"
+                    ? "build ok"
+                    : lastBuild.phase === "scaffold" ? "scaffold ok" : "done"}
             </Chip>
             <p>{lastBuild.message}</p>
+            {lastBuild.readiness ? <p className="small-muted">{lastBuild.readiness.message}</p> : null}
+            {lastBuild.readiness?.missingFiles.length ? <small>Missing: {lastBuild.readiness.missingFiles.join(", ")}</small> : null}
             <small>{lastBuild.rootPath}</small>
           </div>
         ) : null}
@@ -122,7 +149,7 @@ export function BuildScreen() {
             <p className="small-muted">После клика приложение перейдёт в чат: каждый агент напишет, что берёт в работу и какие файлы/результаты должен подготовить.</p>
           </div>
           <button className="primary wide implement-button pulse-button" type="button" disabled={busy} onClick={() => void handleStartAgents()}>
-            <i className="ti ti-users" aria-hidden="true" /> {scaffoldReady ? "Запустить агентов реализации" : "Создать каркас и запустить агентов"}
+            <i className="ti ti-users" aria-hidden="true" /> {isPartial ? "Continue implementation" : scaffoldReady ? "Start implementation agents" : "Create scaffold and start agents"}
           </button>
           {!scaffoldReady ? <small className="small-muted">Если каркас ещё не готов, кнопка создаст его автоматически и сразу запустит агентов.</small> : null}
         </div>
@@ -130,7 +157,7 @@ export function BuildScreen() {
         <div className="panel-title spaced">Задачи агентам</div>
         <div className="assignment-list">
           {assignments.map((item) => (
-            <div className="assignment-card" key={item.owner + item.role}>
+            <div className="assignment-card" key={item.id}>
               <div className="assignment-head">
                 <b>{item.owner}</b>
                 <span>{item.role}</span>

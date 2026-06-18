@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    RamTeamAi_lib::run();
+    ram_team_ai_lib::run();
 }

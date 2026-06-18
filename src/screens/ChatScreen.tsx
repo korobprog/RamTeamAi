@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Chip } from "../components/FRamTeamAie";
-import { RoleBadge, roleLabel } from "../components/RoleBadge";
+import { RoleBadge } from "../components/RoleBadge";
+import { roleLabel } from "../lib/roles";
 import { TeamThinking } from "../components/TeamThinking";
 import { DebateSummary } from "../components/DebateSummary";
 import { describeMcpHealth, listAvailableTools } from "../mcp/manager";
 import { useAppStore } from "../store/appStore";
-import type { AgentRole, ChatMessage, MessageAction, MessageActionKind } from "../types";
+import type { AgentDialogMessage, AgentRole, ChatMessage, MessageAction, MessageActionKind } from "../types";
 
 const COLLAPSE_LIMIT = 360;
 type LibraryView = "chat" | "projects" | "sessions" | "archive";
@@ -37,7 +38,7 @@ function ActionChips({ actions }: { actions: MessageAction[] }) {
   );
 }
 
-function MessageItem({ message, author }: { message: ChatMessage; author: string }) {
+function MessageItem({ message, author }: { message: ChatMessage | AgentDialogMessage; author: string }) {
   const [expanded, setExpanded] = useState(false);
   const isLong = message.text.length > COLLAPSE_LIMIT;
   const shown = isLong && !expanded ? message.text.slice(0, COLLAPSE_LIMIT).trimEnd() + "…" : message.text;
@@ -55,9 +56,34 @@ function MessageItem({ message, author }: { message: ChatMessage; author: string
   );
 }
 
-const statusLabel: Record<string, string> = { typing: "пишет", mcp: "MCP", done: "готов", waiting: "ждёт" };
+const statusLabel: Record<string, string> = { typing: "пишет", mcp: "MCP", done: "готов", waiting: "ждёт", recovering: "recovery", fired: "уволен", hired: "нанят" };
 const initCommandPattern = /^\/?init$/i;
 const projectStatusLabel = { draft: "Черновик", active: "В работе", scaffolded: "Каркас", built: "Собран" };
+const agentAvatar: Record<AgentRole, string> = {
+  architect: "🧙‍♂️",
+  critic: "🦉",
+  researcher: "🔎",
+  arbiter: "⚖️",
+  coder: "🤖",
+  security: "🛡️",
+  product: "🚀",
+  tester: "🧪",
+};
+
+function agentDisplayName(agent: { id: string; name: string; role: AgentRole }, defaultAgentId?: string): string {
+  const prefix = agent.id === (defaultAgentId ?? "architect") ? "Главный · " : "";
+  return `${agentAvatar[agent.role]} ${prefix}${agent.name}`;
+}
+
+function formatWorkDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}ч ${minutes.toString().padStart(2, "0")}м`;
+  if (minutes > 0) return `${minutes}м ${seconds.toString().padStart(2, "0")}с`;
+  return `${seconds}с`;
+}
 
 export function ChatScreen() {
   const [prompt, setPrompt] = useState("");
@@ -67,6 +93,10 @@ export function ChatScreen() {
   const [archiveAction, setArchiveAction] = useState<ArchiveAction | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [archiveNotice, setArchiveNotice] = useState("");
+  const [agentQuestionTargetId, setAgentQuestionTargetId] = useState("");
+  const [nowTick, setNowTick] = useState(Date.now());
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
   const agents = useAppStore((state) => state.agents);
   const providers = useAppStore((state) => state.providers);
   const projects = useAppStore((state) => state.projects);
@@ -77,9 +107,17 @@ export function ChatScreen() {
   const mcpServers = useAppStore((state) => state.mcpServers);
   const runTeam = useAppStore((state) => state.runTeam);
   const runAuto = useAppStore((state) => state.runAuto);
+  const enqueueAgentQuestion = useAppStore((state) => state.enqueueAgentQuestion);
+  const clearQueuedAgentQuestion = useAppStore((state) => state.clearQueuedAgentQuestion);
   const appSettings = useAppStore((state) => state.appSettings);
   const setAppSettings = useAppStore((state) => state.setAppSettings);
   const autoRunning = useAppStore((state) => state.autoRunning);
+  const agentDialogMessages = useAppStore((state) => state.agentDialogMessages);
+  const agentDialogOpen = useAppStore((state) => state.agentDialogOpen);
+  const agentDialogBusy = useAppStore((state) => state.agentDialogBusy);
+  const agentDialogAgentId = useAppStore((state) => state.agentDialogAgentId);
+  const setAgentDialogOpen = useAppStore((state) => state.setAgentDialogOpen);
+  const clearAgentDialog = useAppStore((state) => state.clearAgentDialog);
   const createProject = useAppStore((state) => state.createProject);
   const createSession = useAppStore((state) => state.createSession);
   const selectProject = useAppStore((state) => state.selectProject);
@@ -100,6 +138,11 @@ export function ChatScreen() {
   const artifact = useAppStore((state) => state.artifact);
   const busy = useAppStore((state) => state.busy);
   const activeRunMode = useAppStore((state) => state.activeRunMode);
+  const liveFileActivity = useAppStore((state) => state.liveFileActivity);
+  const queuedAgentQuestions = useAppStore((state) => state.queuedAgentQuestions);
+  const projectWorkTimers = useAppStore((state) => state.projectWorkTimers);
+  const agentRunCheckpoints = useAppStore((state) => state.agentRunCheckpoints);
+  const activeWorkStartedAt = useAppStore((state) => state.activeWorkStartedAt);
   const tools = listAvailableTools(mcpServers).filter((tool) => tool.enabled);
   const activeProjects = projects.filter((project) => !project.archivedAt);
   const archivedProjects = projects.filter((project) => project.archivedAt);
@@ -122,12 +165,33 @@ export function ChatScreen() {
   const implementationStarted = canRunImplementation && session.mode !== "planning" && agentMessages.length > 0;
   const latestSystemMessage = [...session.messages].reverse().find((message) => message.author === "system");
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const agentDialogListRef = useRef<HTMLDivElement | null>(null);
+  const selectedQuestionAgentId = agentQuestionTargetId || appSettings.operatorDefaultAgentId || agents[0]?.id || "";
+  const activeDialogAgent = agents.find((agent) => agent.id === (agentDialogAgentId || selectedQuestionAgentId));
+  const activeElapsedMs = activeWorkStartedAt ? Math.max(0, nowTick - Date.parse(activeWorkStartedAt)) : 0;
+  const projectWorkMs = (projectWorkTimers[activeProjectId] ?? 0) + activeElapsedMs;
+  const visibleCheckpoints = agentRunCheckpoints.slice(-4).reverse();
 
   useEffect(() => {
     const list = messageListRef.current;
     if (!list) return;
     list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
-  }, [session.messages.length, busy]);
+  }, [session.messages.length, busy, queuedAgentQuestions.length]);
+
+  useEffect(() => {
+    const list = agentDialogListRef.current;
+    if (!list) return;
+    list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+  }, [agentDialogMessages.length, agentDialogBusy]);
+
+  useEffect(() => {
+    if (agentDialogOpen) setRightPanelCollapsed(false);
+  }, [agentDialogOpen]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
 
   function modelLabel(providerId: string, modelId: string): string {
     const provider = providers.find((item) => item.id === providerId);
@@ -137,8 +201,12 @@ export function ChatScreen() {
   async function submitPrompt(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const value = prompt.trim();
-    if (!value || busy || !canChat) return;
+    if (!value || !canChat) return;
     setPrompt("");
+    if (busy || autoRunning || agentDialogBusy) {
+      await enqueueAgentQuestion(value, selectedQuestionAgentId);
+      return;
+    }
     if (initCommandPattern.test(value)) {
       await initWorkspace(true);
       return;
@@ -147,7 +215,13 @@ export function ChatScreen() {
       await runAuto(value);
       return;
     }
-    await runTeam(value);
+    await runTeam(value, "planning", selectedQuestionAgentId);
+  }
+
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.nativeEvent.isComposing || event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
   }
 
   async function handleSelectWorkspace() {
@@ -168,6 +242,12 @@ export function ChatScreen() {
     if (message.agentRole) return roleLabel(message.agentRole);
     if (message.author === "system") return "Система";
     return "Пользователь";
+  }
+
+  function agentDialogAuthorLabel(message: AgentDialogMessage): string {
+    if (message.author === "user") return "Вы";
+    if (message.agentRole) return roleLabel(message.agentRole);
+    return agents.find((agent) => agent.id === message.agentId)?.name ?? "Агент";
   }
 
   function pluralRu(count: number, one: string, few: string, many: string): string {
@@ -388,11 +468,29 @@ export function ChatScreen() {
   }
 
   return (
-    <div className="chat-layout">
-      <aside className="sidebar-panel">
+    <div className={"chat-layout" + (leftPanelCollapsed ? " left-collapsed" : "") + (rightPanelCollapsed ? " right-collapsed" : "")}>
+      <aside className={leftPanelCollapsed ? "sidebar-panel side-panel-collapsed" : "sidebar-panel"}>
+        {leftPanelCollapsed ? (
+          <button
+            className="panel-collapse-rail"
+            type="button"
+            title="Развернуть проекты"
+            aria-label="Развернуть левую панель"
+            onClick={() => setLeftPanelCollapsed(false)}
+          >
+            <i className="ti ti-layout-sidebar-left-expand" aria-hidden="true" />
+            <span>Проекты</span>
+          </button>
+        ) : (
+        <>
         <div className="panel-heading">
           <div className="panel-title">Проекты</div>
-          <button className="mini-action" type="button" onClick={() => createProject()}>+</button>
+          <div className="panel-heading-actions">
+            <button className="mini-action" type="button" onClick={() => createProject()}>+</button>
+            <button className="mini-action ghosty" type="button" title="Свернуть левую панель" aria-label="Свернуть левую панель" onClick={() => setLeftPanelCollapsed(true)}>
+              <i className="ti ti-layout-sidebar-left-collapse" aria-hidden="true" />
+            </button>
+          </div>
         </div>
         {activeProjects.slice(0, 3).map((project) => (
           <div className={project.id === activeProjectId ? "session-row project-pill active" : "session-row project-pill"} key={project.id}>
@@ -456,8 +554,8 @@ export function ChatScreen() {
             {"\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u0432\u0435\u0441\u044c \u0430\u0440\u0445\u0438\u0432 \u00b7 "}{archiveCount}
           </button>
         ) : null}
-        <div className="panel-title spaced">Команда</div>
-        {agents.map((agent) => <div className="agent-mini" key={agent.id}><RoleBadge role={agent.role} /><span>{agent.name}</span></div>)}
+        </>
+        )}
       </aside>
       <section className="conversation-panel">
         {libraryView !== "chat" ? renderLibraryPanel() : (
@@ -466,6 +564,15 @@ export function ChatScreen() {
           <button className={session.mode === "planning" ? "chip-button on" : "chip-button"} type="button" disabled={!canChat} onClick={() => setSessionMode("planning")}>Planning</button>
           <button className={session.mode === "chat" ? "chip-button on" : "chip-button"} type="button" disabled={!canChat} onClick={() => setSessionMode("chat")}>Chat</button>
           <button
+            className={agentDialogOpen ? "chip-button on" : "chip-button"}
+            type="button"
+            disabled={!canChat && agentDialogMessages.length === 0}
+            onClick={() => setAgentDialogOpen(!agentDialogOpen)}
+            title="Отдельный чат для вопросов, которые попали в очередь к агентам"
+          >
+            <i className="ti ti-messages" aria-hidden="true" /> Чат агента {agentDialogMessages.length ? `· ${agentDialogMessages.length}` : ""}
+          </button>
+          <button
             className={appSettings.autoMode ? "chip-button on auto-toggle" : "chip-button auto-toggle"}
             type="button"
             title="Авто-режим: команда сама доходит до результата без подтверждений (планирование → каркас → раунды реализации)"
@@ -473,6 +580,7 @@ export function ChatScreen() {
           >
             <i className="ti ti-bolt" aria-hidden="true" /> Авто {appSettings.autoMode ? "вкл" : "выкл"}
           </button>
+          <span className="work-timer" title="Время активной работы агентов над текущим проектом"><i className="ti ti-clock-hour-4" aria-hidden="true" /> {formatWorkDuration(projectWorkMs)}</span>
           <span><i className="ti ti-coin" aria-hidden="true" /> {session.tokensUsed.toLocaleString("ru-RU")} / {session.tokenBudget.toLocaleString("ru-RU")}</span>
         </div>
         {autoRunning ? (
@@ -502,7 +610,47 @@ export function ChatScreen() {
           ) : session.messages.map((message) => (
             <MessageItem key={message.id} message={message} author={messageAuthorLabel(message)} />
           ))}
+          {busy && liveFileActivity.length ? (
+            <div className="live-files-panel">
+              <div className="live-files-head">
+                <span><i className="ti ti-files" aria-hidden="true" /> Файлы в работе</span>
+                <small>{liveFileActivity.length} последних</small>
+              </div>
+              <div className="live-files-list">
+                {liveFileActivity.slice(0, 8).map((item) => (
+                  <div className={"live-file-item " + item.status} key={item.id}>
+                    <span className="live-file-icon"><i className={"ti ti-" + (item.status === "failed" ? "alert-triangle" : item.status === "written" ? "check" : "pencil")} aria-hidden="true" /></span>
+                    <div>
+                      <b>{item.path}</b>
+                      <small>{item.agentName} · {item.action === "create" ? "создаёт" : item.action === "plan" ? "план" : item.action === "error" ? "ошибка" : "редактирует"}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {busy ? <TeamThinking agents={agents} mode={activeRunMode ?? "planning"} projectTitle={activeProject?.title} /> : null}
+          {queuedAgentQuestions.length ? (
+            <div className="agent-queue-panel">
+              <div className="live-files-head">
+                <span><i className="ti ti-list-details" aria-hidden="true" /> Очередь вопросов агентам</span>
+                <small>{queuedAgentQuestions.length}</small>
+              </div>
+              {queuedAgentQuestions.map((question, index) => {
+                const target = agents.find((agent) => agent.id === question.targetAgentId);
+                return (
+                  <div className="queued-question" key={question.id}>
+                    <span>{index + 1}</span>
+                    <div>
+                      <b>{target ? target.name : "Главный агент"}</b>
+                      <small>{question.text}</small>
+                    </div>
+                    <button type="button" onClick={() => clearQueuedAgentQuestion(question.id)} title="Убрать из очереди">×</button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
           {!busy && showDebateSummary ? (
             <DebateSummary artifact={artifact} roles={debateRoles} onGoToBuild={() => setScreen("build")} />
           ) : null}
@@ -518,23 +666,86 @@ export function ChatScreen() {
             </div>
           ) : null}
         </div>
-        <form className="composer" onSubmit={(event) => void submitPrompt(event)}>
-          <input
-            aria-label="Задача для команды"
-            disabled={busy || !canChat}
-            placeholder={canChat ? "Задача для команды… или /init" : "Сначала создайте активную сессию"}
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-          />
-          <button className="primary" type="submit" disabled={busy || !prompt.trim() || !canChat}>{busy ? "…" : "Отправить"}</button>
-          <button type="button" onClick={() => setScreen("build")}>К решению</button>
-        </form>
         </>
         )}
       </section>
-      <aside className="right-panel">
-        <div className="panel-title">Активные агенты</div>
-        {agents.map((agent) => <div className="agent-status" key={agent.id}><span className={"dot " + agent.status} /><div><b>{agent.name}</b><small>{modelLabel(agent.providerId, agent.modelId)}</small><small>{statusLabel[agent.status] ?? agent.status}</small></div></div>)}
+      <aside className={rightPanelCollapsed ? "right-panel side-panel-collapsed" : "right-panel"}>
+        {rightPanelCollapsed ? (
+          <button
+            className="panel-collapse-rail"
+            type="button"
+            title="Развернуть агентов"
+            aria-label="Развернуть правую панель"
+            onClick={() => setRightPanelCollapsed(false)}
+          >
+            <i className="ti ti-layout-sidebar-right-expand" aria-hidden="true" />
+            <span>Агенты</span>
+          </button>
+        ) : (
+        <>
+        <div className="panel-heading compact">
+          <div className="panel-title">Активные агенты</div>
+          <button className="mini-action ghosty" type="button" title="Свернуть правую панель" aria-label="Свернуть правую панель" onClick={() => setRightPanelCollapsed(true)}>
+            <i className="ti ti-layout-sidebar-right-collapse" aria-hidden="true" />
+          </button>
+        </div>
+        {agents.map((agent) => <div className="agent-status" key={agent.id}><span className="agent-avatar" aria-hidden="true">{agentAvatar[agent.role]}</span><span className={"dot " + agent.status} /><div><b>{agent.name}</b><small>{modelLabel(agent.providerId, agent.modelId)}</small><small>{statusLabel[agent.status] ?? agent.status}</small></div></div>)}
+        {visibleCheckpoints.length ? (
+          <section className="agent-queue-panel">
+            <div className="panel-title">Supervisor checkpoints</div>
+            {visibleCheckpoints.map((checkpoint) => {
+              const owner = agents.find((agent) => agent.id === checkpoint.leaseOwner);
+              return (
+                <div className="agent-status" key={checkpoint.id}>
+                  <span className={"dot " + (checkpoint.status === "failed" ? "warning" : checkpoint.status === "active" ? "typing" : "done")} />
+                  <div>
+                    <b>{owner?.name ?? checkpoint.leaseOwner}</b>
+                    <small>{checkpoint.status} · lease до {new Date(checkpoint.leaseExpiresAt).toLocaleTimeString()}</small>
+                    {checkpoint.replacementAgentId ? <small>recovered from {checkpoint.agentId}</small> : null}
+                  </div>
+                </div>
+              );
+            })}
+          </section>
+        ) : null}
+        {agentDialogOpen || agentDialogMessages.length ? (
+          <section className="agent-dialog-panel">
+            <div className="agent-dialog-head">
+              <div>
+                <b>Отдельный чат агента</b>
+                <small>{activeDialogAgent ? activeDialogAgent.name : "очередь вопросов"}</small>
+              </div>
+              <div className="agent-dialog-actions">
+                {agentDialogMessages.length ? (
+                  <button className="mini-action ghosty" type="button" title="Очистить отдельный чат" onClick={clearAgentDialog}>
+                    <i className="ti ti-trash" aria-hidden="true" />
+                  </button>
+                ) : null}
+                <button className="mini-action ghosty" type="button" title={agentDialogOpen ? "Свернуть чат агента" : "Открыть чат агента"} onClick={() => setAgentDialogOpen(!agentDialogOpen)}>
+                  <i className={"ti ti-" + (agentDialogOpen ? "chevron-up" : "chevron-down")} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+            {agentDialogOpen ? (
+              <>
+                <div className="agent-dialog-list" ref={agentDialogListRef}>
+                  {agentDialogMessages.length === 0 ? (
+                    <p className="small-muted">Вопросы агенту из очереди появятся здесь, а основной диалог останется на месте.</p>
+                  ) : agentDialogMessages.map((message) => (
+                    <MessageItem key={message.id} message={message} author={agentDialogAuthorLabel(message)} />
+                  ))}
+                  {agentDialogBusy ? (
+                    <div className="agent-dialog-typing">
+                      <span className="team-thinking-spinner" aria-hidden="true" />
+                      <small>Агент отвечает в отдельном чате…</small>
+                    </div>
+                  ) : null}
+                </div>
+                {queuedAgentQuestions.length ? <p className="agent-dialog-queue-note">В очереди ещё: {queuedAgentQuestions.length}</p> : null}
+              </>
+            ) : null}
+          </section>
+        ) : null}
         <div className="panel-title spaced">MCP</div>
         <p className="small-muted">{describeMcpHealth(mcpServers)}</p>
         <div className="tool-list">{tools.slice(0, 7).map((tool) => <Chip key={tool.id} tone={tool.kind === "web-search" ? "info" : "default"}>{tool.label}</Chip>)}</div>
@@ -547,7 +758,49 @@ export function ChatScreen() {
           <button className="chip-button on" type="button" disabled={busy} onClick={() => void initWorkspace(true)}>init</button>
         </div>
         {lastWorkspaceInit ? <p className="small-muted init-result">{lastWorkspaceInit.createdFiles.length} создано · {lastWorkspaceInit.existingFiles.length} уже было</p> : null}
+        </>
+        )}
       </aside>
+      {libraryView === "chat" ? (
+        <form className="composer" onSubmit={(event) => void submitPrompt(event)}>
+          <div className="composer-main">
+            <div className="composer-topline">
+              <span className="composer-kicker">{"\u0417\u0430\u0434\u0430\u0447\u0430 \u0434\u043b\u044f \u043a\u043e\u043c\u0430\u043d\u0434\u044b"}</span>
+              <span className="composer-hint">{"Enter \u2014 \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u00b7 Shift+Enter \u2014 \u043d\u043e\u0432\u0430\u044f \u0441\u0442\u0440\u043e\u043a\u0430"}</span>
+            </div>
+            <div className="composer-input-row">
+              <div className="agent-target-box">
+                <select
+                  aria-label="\u041a\u043e\u043c\u0443 \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u0432\u043e\u043f\u0440\u043e\u0441"
+                  className="agent-target-select"
+                  disabled={!canChat}
+                  value={selectedQuestionAgentId}
+                  onChange={(event) => setAgentQuestionTargetId(event.target.value)}
+                  title={busy || autoRunning || agentDialogBusy ? "\u0412\u043e\u043f\u0440\u043e\u0441 \u043f\u043e\u043f\u0430\u0434\u0451\u0442 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u044c \u0438 \u043e\u0442\u043a\u0440\u043e\u0435\u0442\u0441\u044f \u0432 \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u043e\u043c \u0447\u0430\u0442\u0435 \u0430\u0433\u0435\u043d\u0442\u0430" : "\u041a\u043e\u043c\u0443 \u0430\u0434\u0440\u0435\u0441\u043e\u0432\u0430\u0442\u044c \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0443\u044e \u0440\u0435\u043f\u043b\u0438\u043a\u0443"}
+                >
+                  {agents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>{agentDisplayName(agent, appSettings.operatorDefaultAgentId)}</option>
+                  ))}
+                </select>
+                <span>{"\u0417\u0430\u0434\u0430\u0439 \u0432\u043e\u043f\u0440\u043e\u0441"}</span>
+              </div>
+              <textarea
+                aria-label="\u0417\u0430\u0434\u0430\u0447\u0430 \u0434\u043b\u044f \u043a\u043e\u043c\u0430\u043d\u0434\u044b"
+                disabled={!canChat}
+                placeholder={canChat ? busy || autoRunning || agentDialogBusy ? "\u0412\u043e\u043f\u0440\u043e\u0441 \u0430\u0433\u0435\u043d\u0442\u0443 \u043f\u043e\u043f\u0430\u0434\u0451\u0442 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u044c \u0438 \u043e\u0442\u043a\u0440\u043e\u0435\u0442\u0441\u044f \u0441\u043f\u0440\u0430\u0432\u0430\u2026" : "\u0417\u0430\u0434\u0430\u0447\u0430 \u0434\u043b\u044f \u043a\u043e\u043c\u0430\u043d\u0434\u044b\u2026 \u0438\u043b\u0438 /init" : "\u0421\u043d\u0430\u0447\u0430\u043b\u0430 \u0441\u043e\u0437\u0434\u0430\u0439\u0442\u0435 \u0430\u043a\u0442\u0438\u0432\u043d\u0443\u044e \u0441\u0435\u0441\u0441\u0438\u044e"}
+                rows={3}
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                onKeyDown={handleComposerKeyDown}
+              />
+            </div>
+          </div>
+          <div className="composer-actions">
+            <button className="primary" type="submit" disabled={!prompt.trim() || !canChat}>{busy || autoRunning || agentDialogBusy ? "\u0412 \u043e\u0447\u0435\u0440\u0435\u0434\u044c" : "\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c"}</button>
+            <button type="button" onClick={() => setScreen("build")}>{"\u041a \u0440\u0435\u0448\u0435\u043d\u0438\u044e"}</button>
+          </div>
+        </form>
+      ) : null}
     </div>
   );
 }

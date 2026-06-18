@@ -9,7 +9,7 @@ use core::github::{
     poll_device_flow, GithubDeviceCodeResponse, GithubTokenPollResult, GithubUserProfile,
 };
 use core::orchestrator::{run_planning_round, AgentConfig, ChatMessage, TopologyConfig};
-use core::project_builder::{build_project as write_project_files, init_workspace as init_workspace_files, write_workspace_file as write_workspace_text_file, BuildResult, PlanArtifact, WorkspaceInitResult, WorkspaceWriteResult};
+use core::project_builder::{build_project as write_project_files, init_workspace as init_workspace_files, list_workspace_files as list_workspace_files_inner, read_workspace_file as read_workspace_text_file, write_workspace_file as write_workspace_text_file, BuildResult, PlanArtifact, WorkspaceInitResult, WorkspaceReadResult, WorkspaceWriteResult};
 use core::provider::{complete_chat, default_providers, test_provider, CompletionResult, ProviderConfig, ProviderTestResult};
 use core::storage::Storage;
 use core::vault::{delete_secret, get_secret, has_secret, save_secret};
@@ -127,6 +127,20 @@ fn write_workspace_file(
 }
 
 #[tauri::command]
+fn read_workspace_file(root_path: String, relative_path: String) -> Result<WorkspaceReadResult, String> {
+    read_workspace_text_file(
+        std::path::Path::new(root_path.trim()),
+        relative_path.trim(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_workspace_files(root_path: String) -> Result<Vec<String>, String> {
+    list_workspace_files_inner(std::path::Path::new(root_path.trim())).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn append_history(state: State<'_, AppState>, session_id: String, message: ChatMessage) -> Result<(), String> {
     state.storage.append_message(&session_id, &message).map_err(|error| error.to_string())
 }
@@ -184,6 +198,8 @@ pub fn run() {
             build_project,
             init_workspace,
             write_workspace_file,
+            read_workspace_file,
+            list_workspace_files,
             append_history,
             load_history,
             github_begin_device_flow,

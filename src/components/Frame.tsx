@@ -2,11 +2,12 @@ import type { ReactNode } from "react";
 import type { ScreenId, ThemePreference } from "../types";
 import { useAppStore } from "../store/appStore";
 
-const themeOrder: ThemePreference[] = ["system", "light", "dark"];
+const themeOrder: ThemePreference[] = ["system", "light", "dark", "vibe"];
 const themeMeta: Record<ThemePreference, { icon: string; label: string }> = {
   system: { icon: "device-desktop", label: "Тема: системная" },
   light: { icon: "sun", label: "Тема: светлая" },
   dark: { icon: "moon", label: "Тема: тёмная" },
+  vibe: { icon: "flame", label: "Тема: Vibe" },
 };
 
 const nav: Array<{ id: ScreenId; label: string }> = [

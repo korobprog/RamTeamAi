@@ -8,6 +8,7 @@ const themeOptions: Array<{ id: ThemePreference; label: string; icon: string; hi
   { id: "system", label: "Системная", icon: "device-desktop", hint: "как в ОС" },
   { id: "light", label: "Светлая", icon: "sun", hint: "всегда светлая" },
   { id: "dark", label: "Тёмная", icon: "moon", hint: "всегда тёмная" },
+  { id: "vibe", label: "Vibe", icon: "flame", hint: "тёмная с янтарём" },
 ];
 
 type SettingsCard = {
@@ -123,6 +124,7 @@ export function SettingsScreen() {
   const activeSessions = sessions.filter((session) => !session.archivedAt).length;
   const activeProject = projects.find((project) => project.id === activeProjectId && !project.archivedAt);
   const linkedProjects = projects.filter((project) => project.github).length;
+  const operatorProvider = providers.find((provider) => provider.id === appSettings.operatorAssistantProviderId) ?? providers[0];
 
   const settingsCards: SettingsCard[] = [
     {
@@ -307,6 +309,39 @@ export function SettingsScreen() {
         <label className="settings-toggle-row">
           <input
             type="checkbox"
+            checked={appSettings.healthSupervisorEnabled}
+            onChange={(event) => setAppSettings({ healthSupervisorEnabled: event.target.checked })}
+          />
+          <span>
+            <b>Online health supervisor</b>
+            <small>Tracks OK/DOWN/RATE_LIMITED/AUTH_ERROR, opens circuit breaker, and starts a replacement agent when heartbeat lease expires.</small>
+          </span>
+        </label>
+        <div className="form-grid compact operator-settings">
+          <label>
+            Health-check, sec
+            <input
+              type="number"
+              min={15}
+              max={600}
+              value={appSettings.providerHealthIntervalSec}
+              onChange={(event) => setAppSettings({ providerHealthIntervalSec: Math.max(15, Number(event.target.value) || 60) })}
+            />
+          </label>
+          <label>
+            Lease online, ???
+            <input
+              type="number"
+              min={15}
+              max={900}
+              value={appSettings.agentLeaseTimeoutSec}
+              onChange={(event) => setAppSettings({ agentLeaseTimeoutSec: Math.max(15, Number(event.target.value) || 90) })}
+            />
+          </label>
+        </div>
+        <label className="settings-toggle-row">
+          <input
+            type="checkbox"
             checked={appSettings.autoMode}
             onChange={(event) => setAppSettings({ autoMode: event.target.checked })}
           />
@@ -315,6 +350,49 @@ export function SettingsScreen() {
             <small>Команда сама проходит планирование → каркас → раунды реализации и пишет файлы, пока появляются новые. Лимит раундов: {appSettings.autoMaxRounds}. Тумблер «Авто» есть и в чате.</small>
           </span>
         </label>
+        <label className="settings-toggle-row">
+          <input
+            type="checkbox"
+            checked={appSettings.operatorAssistantEnabled}
+            onChange={(event) => setAppSettings({ operatorAssistantEnabled: event.target.checked })}
+          />
+          <span>
+            <b>Проджект-менеджер для вопросов во время работы</b>
+            <small>Включено по умолчанию: дополнительные просьбы оператора попадают в очередь, адресуются выбранному агенту и получают PM-контекст.</small>
+          </span>
+        </label>
+        <div className="form-grid compact operator-settings">
+          <label>
+            Главный агент по умолчанию
+            <select
+              value={appSettings.operatorDefaultAgentId ?? agents[0]?.id ?? ""}
+              onChange={(event) => setAppSettings({ operatorDefaultAgentId: event.target.value })}
+            >
+              {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+            </select>
+          </label>
+          <label>
+            Быстрый провайдер PM
+            <select
+              value={appSettings.operatorAssistantProviderId ?? providers[0]?.id ?? ""}
+              onChange={(event) => {
+                const provider = providers.find((item) => item.id === event.target.value);
+                setAppSettings({ operatorAssistantProviderId: event.target.value, operatorAssistantModelId: provider?.models[0]?.id });
+              }}
+            >
+              {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+            </select>
+          </label>
+          <label>
+            Быстрая модель PM
+            <select
+              value={appSettings.operatorAssistantModelId ?? operatorProvider?.models[0]?.id ?? ""}
+              onChange={(event) => setAppSettings({ operatorAssistantModelId: event.target.value })}
+            >
+              {(operatorProvider?.models ?? []).map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+            </select>
+          </label>
+        </div>
       </section>
 
       <section className="settings-section theme-panel">

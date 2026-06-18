@@ -18,13 +18,16 @@ type WebWritableFileStream = {
   close: () => Promise<void>;
 };
 type WebFileHandle = {
+  kind?: "file";
   createWritable: () => Promise<WebWritableFileStream>;
+  getFile: () => Promise<File>;
 };
 type WebDirectoryHandle = {
   kind: "directory";
   name: string;
   getDirectoryHandle: (name: string, options?: { create?: boolean }) => Promise<WebDirectoryHandle>;
   getFileHandle: (name: string, options?: { create?: boolean }) => Promise<WebFileHandle>;
+  entries?: () => AsyncIterableIterator<[string, WebDirectoryHandle | WebFileHandle]>;
   queryPermission?: (descriptor?: { mode?: WebPermissionMode }) => Promise<PermissionState>;
   requestPermission?: (descriptor?: { mode?: WebPermissionMode }) => Promise<PermissionState>;
 };
@@ -44,6 +47,12 @@ export interface WorkspaceWriteResult {
   path: string;
   created: boolean;
   overwritten: boolean;
+}
+
+export interface WorkspaceReadResult {
+  path: string;
+  content: string;
+  exists: boolean;
 }
 
 export async function pickWorkspaceFolder(currentPath?: string): Promise<string | undefined> {
@@ -112,6 +121,30 @@ export async function writeWorkspaceTextFile(
     content,
     overwrite: options.overwrite ?? true,
   });
+}
+
+// Read a single workspace file so agents can edit it instead of guessing its
+// content. Missing files resolve to `{ exists: false }` rather than throwing.
+export async function readWorkspaceTextFile(rootPath: string, relativePath: string): Promise<WorkspaceReadResult> {
+  if (!isTauriRuntime()) {
+    const handle = await getWritableWebWorkspaceHandle();
+    if (!handle) return { path: relativePath, content: "", exists: false };
+    return readWebFile(handle, relativePath);
+  }
+
+  return safeInvoke<WorkspaceReadResult>("read_workspace_file", { rootPath, relativePath });
+}
+
+// List existing (text) files under the workspace root for the implementation
+// snapshot. Best-effort: returns [] when no folder is available.
+export async function listWorkspaceFiles(rootPath: string): Promise<string[]> {
+  if (!isTauriRuntime()) {
+    const handle = await getWritableWebWorkspaceHandle();
+    if (!handle) return [];
+    return listWebWorkspaceFiles(handle);
+  }
+
+  return safeInvoke<string[]>("list_workspace_files", { rootPath });
 }
 
 export async function writeWebWorkspaceFile(
@@ -308,6 +341,52 @@ async function writeWebFile(
   await writable.close();
 
   return { path: parts.join("/"), created: !existed, overwritten: existed };
+}
+
+const WEB_SNAPSHOT_SKIP_DIRS = new Set([".git", "node_modules", "target", "dist", "build", ".next"]);
+const WEB_SNAPSHOT_MAX_FILES = 200;
+
+async function readWebFile(root: WebDirectoryHandle, relativePath: string): Promise<WorkspaceReadResult> {
+  const parts = splitWebPath(relativePath);
+  const fileName = parts.at(-1);
+  const normalized = parts.join("/");
+  if (!fileName) return { path: relativePath, content: "", exists: false };
+
+  try {
+    let directory = root;
+    for (const part of parts.slice(0, -1)) {
+      directory = await directory.getDirectoryHandle(part, { create: false });
+    }
+    const handle = await directory.getFileHandle(fileName, { create: false });
+    const file = await handle.getFile();
+    return { path: normalized, content: await file.text(), exists: true };
+  } catch (error) {
+    if (isNotFoundError(error)) return { path: normalized, content: "", exists: false };
+    throw error;
+  }
+}
+
+async function listWebWorkspaceFiles(root: WebDirectoryHandle): Promise<string[]> {
+  if (typeof root.entries !== "function") return [];
+  const files: string[] = [];
+
+  const walk = async (directory: WebDirectoryHandle, prefix: string): Promise<void> => {
+    if (files.length >= WEB_SNAPSHOT_MAX_FILES || typeof directory.entries !== "function") return;
+    for await (const [name, handle] of directory.entries()) {
+      if (files.length >= WEB_SNAPSHOT_MAX_FILES) break;
+      const childPath = prefix ? `${prefix}/${name}` : name;
+      if (handle.kind === "directory") {
+        if (WEB_SNAPSHOT_SKIP_DIRS.has(name)) continue;
+        await walk(handle as WebDirectoryHandle, childPath);
+      } else if (name !== ".gitkeep") {
+        files.push(childPath);
+      }
+    }
+  };
+
+  await walk(root, "");
+  files.sort();
+  return files;
 }
 
 async function webFileExists(directory: WebDirectoryHandle, fileName: string): Promise<boolean> {

@@ -6,14 +6,27 @@ import { callMcpTool as callMcpToolRequest, formatMcpToolsForPrompt, testMcpConn
 import { applyTheme } from "../lib/theme";
 import { synthesizePlan } from "../orchestrator";
 import { extractWorkspaceFileBlocks } from "../orchestrator/fileBlocks";
+import {
+  DEFAULT_AGENT_LEASE_TIMEOUT_SEC,
+  DEFAULT_PROVIDER_HEALTH_INTERVAL_SEC,
+  applyProviderHealth,
+  checkpointIsStale,
+  createAgentCheckpoint,
+  failCheckpoint,
+  heartbeatCheckpoint,
+  partialCheckpoint,
+  providerCanReceiveTraffic,
+  recoverCheckpoint,
+  selectRecoveryAgent,
+} from "../orchestrator/healthSupervisor";
 import { selectImplementationAgents } from "../orchestrator/agentSelection";
 import { completeWithProvider, maskSecret, rememberProviderSecret, testProviderConnection } from "../providers";
 import type { CompletionResult, ProviderTestResult } from "../providers";
-import { buildProject, planImplementationAssignments, renderImplementationPlan } from "../projectBuilder";
+import { buildProject, planImplementationAssignments, renderImplementationPlan, SCAFFOLD_APP_STUB_MARKER, validateProjectCompleteness } from "../projectBuilder";
 import { beginGithubDeviceFlow, disconnectGithub, isGithubConfigured, loadGithubProfile, pollGithubDeviceFlow } from "../integrations/github";
 import { describeFirebaseAuthError, isFirebaseConfigured, loadCloudSettings, loadFirebaseUid, saveCloudSettings, signInFirebaseWithGithubToken, signOutFirebase } from "../integrations/firebase";
-import type { AgentConfig, AgentRunMode, AppSettings, BuildResult, ChatMessage, CloudSettingsSnapshot, GithubTokenPollResult, McpServerConfig, McpServerTestResult, McpToolCallResult, MessageAction, PlanArtifact, ProjectConfig, ProjectGitLink, ProviderConfig, ProviderMonitoringConfig, ScreenId, SessionConfig, TopologyConfig, UserAccountState, WorkspaceInitResult } from "../types";
-import { clearStoredWebWorkspaceFolder, initWorkspaceFiles, pickWorkspaceFolder, writeWorkspaceTextFile } from "../workspace";
+import type { AgentConfig, AgentDialogMessage, AgentRunCheckpoint, AgentRunMode, AppSettings, BuildResult, ChatMessage, CloudSettingsSnapshot, GithubTokenPollResult, ImplementationAssignment, LiveFileActivity, McpServerConfig, McpServerTestResult, McpToolCallResult, MessageAction, PlanArtifact, ProjectConfig, ProjectGitLink, ProviderConfig, ProviderMonitoringConfig, QueuedAgentQuestion, ScreenId, SessionConfig, TopologyConfig, UserAccountState, WorkspaceInitResult } from "../types";
+import { clearStoredWebWorkspaceFolder, initWorkspaceFiles, listWorkspaceFiles, pickWorkspaceFolder, readWorkspaceTextFile, writeWorkspaceTextFile } from "../workspace";
 
 const PROVIDERS_STORAGE_KEY = "RamTeamAi.providers.v2";
 const LEGACY_PROVIDERS_STORAGE_KEY = "RamTeamAi.provider-overrides";
@@ -26,11 +39,24 @@ const SESSIONS_STORAGE_KEY = "RamTeamAi.sessions.v1";
 const ACTIVE_PROJECT_STORAGE_KEY = "RamTeamAi.active-project.v1";
 const ACTIVE_SESSION_STORAGE_KEY = "RamTeamAi.active-session.v1";
 const APP_SETTINGS_STORAGE_KEY = "RamTeamAi.app-settings.v1";
+const PROJECT_WORK_TIMERS_STORAGE_KEY = "RamTeamAi.project-work-timers.v1";
+
+const LEGACY_MCP_DEFAULT_ENDPOINTS: Record<string, Array<Pick<McpServerConfig, "transport" | "commandOrUrl">>> = {
+  "web-search": [{ transport: "http", commandOrUrl: "http://localhost:3000/mcp" }],
+  filesystem: [{ transport: "stdio", commandOrUrl: "npx -y @modelcontextprotocol/server-filesystem ." }],
+};
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
   modelFallbackEnabled: true,
+  healthSupervisorEnabled: true,
+  providerHealthIntervalSec: DEFAULT_PROVIDER_HEALTH_INTERVAL_SEC,
+  agentLeaseTimeoutSec: DEFAULT_AGENT_LEASE_TIMEOUT_SEC,
   autoMode: false,
   autoMaxRounds: 4,
+  operatorAssistantEnabled: true,
+  operatorDefaultAgentId: "architect",
+  operatorAssistantProviderId: "RamTeamAi",
+  operatorAssistantModelId: "deepseek-v4-flash",
   theme: "system",
 };
 
@@ -38,8 +64,131 @@ const IMPLEMENTATION_ROUND_PROMPT = [
   "Режим реализации по утверждённому PLAN.md в рабочей папке.",
   "Не возвращайтесь к обсуждению и планированию. Возьмите конкретные файлы из плана и напишите их ПОЛНЫЙ код прямо сейчас.",
   "Каждый файл оформляйте отдельной строкой `Файл: путь/к/файлу`, а сразу под ней fenced code block с полным содержимым файла — только так приложение запишет код на диск.",
+  "Если файл уже существует (его содержимое приведено в снимке рабочей папки ниже) — это РЕДАКТИРОВАНИЕ: верните полный обновлённый текст файла целиком, сохранив неизменные части и дописав/исправив нужное. Не выдумывайте содержимое заново и не присылайте обрезанный файл или один diff.",
   "Не описывайте файлы словами и не откладывайте «на следующую итерацию». Ответ без блоков `Файл:` + код не принимается.",
 ].join("\n");
+
+// Split the plan steps across the round's agents so each one owns a distinct
+// slice instead of all agents rewriting the same files and overwriting each
+// other within a single round.
+function partitionStepsAcrossAgents(steps: string[], agents: AgentConfig[]): Map<string, string[]> {
+  const buckets = new Map<string, string[]>(agents.map((agent) => [agent.id, []]));
+  if (!agents.length) return buckets;
+  steps.forEach((step, index) => {
+    const agent = agents[index % agents.length];
+    buckets.get(agent.id)?.push(step);
+  });
+  return buckets;
+}
+
+// Per-agent directive that pins each agent to its own area and tells it not to
+// rewrite files another agent already produced earlier in the same round.
+function buildAgentRoundDirective(
+  agent: AgentConfig,
+  ownedSteps: string[],
+  assignment: ImplementationAssignment | undefined,
+  alreadyWritten: string[],
+): string {
+  const lines = [
+    `Координация раунда. Твоя роль: ${agent.role}. ${assignment?.summary ?? "Берёшь следующий конкретный шаг плана."}`,
+  ];
+  if (ownedSteps.length) {
+    lines.push("Твои шаги в этом раунде (не бери чужие): " + ownedSteps.map((step) => `«${step}»`).join("; ") + ".");
+  } else if (assignment?.deliverables.length) {
+    lines.push("Твои результаты: " + assignment.deliverables.join("; ") + ".");
+  }
+  if (alreadyWritten.length) {
+    lines.push(
+      "В этом раунде другие агенты уже записали файлы: " + alreadyWritten.join(", ") + ".",
+      "Не переписывай их заново — возьми другие файлы из своей зоны. Трогай уже записанный файл только если в нём конкретная ошибка, и тогда верни его полный исправленный текст.",
+    );
+  }
+  return lines.join("\n");
+}
+
+// Budget for the workspace snapshot injected into implementation context. Keeps
+// edits grounded in real file content without blowing up the model context.
+const WORKSPACE_SNAPSHOT_CHAR_BUDGET = 24_000;
+const WORKSPACE_SNAPSHOT_FILE_CHAR_LIMIT = 6_000;
+// Scaffold/meta files duplicate the plan already in context, so we skip them in
+// the snapshot to spend the budget on real source files.
+const WORKSPACE_SNAPSHOT_SKIP = new Set(["IMPLEMENTATION.md", "docs/agent-tasks.md", "docs/plan.md"]);
+
+// Read existing workspace files so implementation agents edit real content
+// instead of regenerating files blindly. Returns undefined when nothing is on
+// disk yet (first build) so we don't inject an empty section.
+// Product-defining files that the scaffold creates as placeholders. While any of
+// them still holds the scaffold stub the project is not actually built, even if
+// every required file technically exists on disk.
+const SCAFFOLD_STUB_CANDIDATES = ["src/App.tsx"];
+
+function normalizeWorkspacePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+/g, "/").trim();
+}
+
+// Detect required files that exist but were never implemented past the generated
+// scaffold stub, so completeness does not report an empty skeleton as "built".
+async function detectScaffoldStubFiles(rootPath: string, files: string[]): Promise<string[]> {
+  const present = new Set(files.map(normalizeWorkspacePath));
+  const stubs: string[] = [];
+  for (const path of SCAFFOLD_STUB_CANDIDATES) {
+    if (!present.has(path)) continue;
+    try {
+      const file = await readWorkspaceTextFile(rootPath, path);
+      if (file.exists && file.content.includes(SCAFFOLD_APP_STUB_MARKER)) stubs.push(path);
+    } catch {
+      // Unreadable file: leave it out rather than blocking completion on an I/O error.
+    }
+  }
+  return stubs;
+}
+
+async function buildWorkspaceSnapshot(rootPath: string): Promise<string | undefined> {
+  let paths: string[];
+  try {
+    paths = await listWorkspaceFiles(rootPath);
+  } catch {
+    return undefined;
+  }
+
+  const candidates = paths.filter((path) => !WORKSPACE_SNAPSHOT_SKIP.has(path));
+  if (!candidates.length) return undefined;
+
+  const sections: string[] = [];
+  let used = 0;
+  let truncated = false;
+
+  for (const path of candidates) {
+    if (used >= WORKSPACE_SNAPSHOT_CHAR_BUDGET) {
+      truncated = true;
+      break;
+    }
+    let file;
+    try {
+      file = await readWorkspaceTextFile(rootPath, path);
+    } catch {
+      continue;
+    }
+    if (!file.exists) continue;
+
+    const clipped = file.content.length > WORKSPACE_SNAPSHOT_FILE_CHAR_LIMIT
+      ? file.content.slice(0, WORKSPACE_SNAPSHOT_FILE_CHAR_LIMIT) + "\n… (файл обрезан в снимке, верните его полностью)"
+      : file.content;
+    const section = `Файл: ${path}\n\`\`\`\n${clipped}\n\`\`\``;
+    used += section.length;
+    sections.push(section);
+  }
+
+  if (!sections.length) return undefined;
+
+  return [
+    "## Снимок текущей рабочей папки",
+    "Ниже — файлы, которые уже есть на диске. Чтобы изменить любой из них, верните блок `Файл: путь` + ПОЛНЫЙ обновлённый код этого файла.",
+    truncated ? "(Показаны не все файлы — снимок ограничен по объёму.)" : "",
+    "",
+    sections.join("\n\n"),
+  ].filter(Boolean).join("\n");
+}
 
 function ensureProviderMonitoring(provider: ProviderConfig, saved?: ProviderMonitoringConfig): ProviderMonitoringConfig {
   const now = Date.now();
@@ -50,6 +199,11 @@ function ensureProviderMonitoring(provider: ProviderConfig, saved?: ProviderMoni
     requestCount: saved?.requestCount ?? provider.monitoring?.requestCount ?? 0,
     errorCount: saved?.errorCount ?? provider.monitoring?.errorCount ?? 0,
     tokensUsed: saved?.tokensUsed ?? provider.monitoring?.tokensUsed ?? 0,
+    healthStatus: saved?.healthStatus ?? provider.monitoring?.healthStatus ?? (provider.status === "connected" ? "ok" : "unknown"),
+    consecutiveFailures: saved?.consecutiveFailures ?? provider.monitoring?.consecutiveFailures ?? 0,
+    circuitOpenUntil: saved?.circuitOpenUntil ?? provider.monitoring?.circuitOpenUntil,
+    lastOkAt: saved?.lastOkAt ?? provider.monitoring?.lastOkAt,
+    lastError: saved?.lastError ?? provider.monitoring?.lastError,
   };
 }
 
@@ -58,16 +212,20 @@ function withProviderMonitoring(provider: ProviderConfig, saved?: ProviderConfig
   return { ...merged, monitoring: ensureProviderMonitoring(merged, saved?.monitoring) };
 }
 
-function updateProviderMonitoring(provider: ProviderConfig, patch: { tokens?: number; latencyMs?: number; failed?: boolean } = {}): ProviderConfig {
+function updateProviderMonitoring(provider: ProviderConfig, patch: { tokens?: number; latencyMs?: number; failed?: boolean; error?: string } = {}): ProviderConfig {
   const monitoring = ensureProviderMonitoring(provider, provider.monitoring);
   const tokens = Math.max(0, patch.tokens ?? 0);
+  const healthPatched = patch.failed !== undefined
+    ? applyProviderHealth(provider, { ok: !patch.failed, latencyMs: patch.latencyMs, error: patch.error })
+    : provider;
+  const nextMonitoring = ensureProviderMonitoring(healthPatched, healthPatched.monitoring);
 
   return {
-    ...provider,
+    ...healthPatched,
     latencyMs: patch.latencyMs ?? provider.latencyMs,
-    status: patch.failed ? "warning" : provider.status,
+    status: patch.failed ? "warning" : healthPatched.status,
     monitoring: {
-      ...monitoring,
+      ...nextMonitoring,
       updatedAt: new Date().toISOString(),
       requestCount: monitoring.requestCount + (patch.tokens !== undefined || patch.failed !== undefined ? 1 : 0),
       errorCount: monitoring.errorCount + (patch.failed ? 1 : 0),
@@ -86,6 +244,12 @@ function healProviderBaseUrl(url: string | undefined, fallback: string): string 
 
 function mergeBuiltInProvider(defaultProvider: ProviderConfig, savedProvider?: ProviderConfig): ProviderConfig {
   if (!savedProvider) return withProviderMonitoring(defaultProvider);
+  const savedStatus = defaultProvider.id === "ollama"
+    && savedProvider.status === "connected"
+    && !savedProvider.monitoring?.lastOkAt
+    && savedProvider.latencyMs == null
+    ? defaultProvider.status
+    : savedProvider.status;
   const merged = {
     ...defaultProvider,
     baseUrl: healProviderBaseUrl(savedProvider.baseUrl, defaultProvider.baseUrl),
@@ -93,7 +257,7 @@ function mergeBuiltInProvider(defaultProvider: ProviderConfig, savedProvider?: P
     stream: savedProvider.stream ?? defaultProvider.stream,
     keyRef: savedProvider.keyRef,
     maskedKey: savedProvider.maskedKey,
-    status: savedProvider.status ?? defaultProvider.status,
+    status: savedStatus ?? defaultProvider.status,
     latencyMs: savedProvider.latencyMs,
   };
   return withProviderMonitoring(merged, savedProvider);
@@ -165,6 +329,16 @@ function persistAgents(agents: AgentConfig[]): void {
 
 function mergeMcpServer(defaultServer: McpServerConfig, savedServer?: McpServerConfig): McpServerConfig {
   if (!savedServer) return defaultServer;
+  const legacyEndpoints = LEGACY_MCP_DEFAULT_ENDPOINTS[defaultServer.id] ?? [];
+  const savedUsesLegacyDefault = legacyEndpoints.some((endpoint) => (
+    endpoint.transport === savedServer.transport
+    && endpoint.commandOrUrl === savedServer.commandOrUrl
+    && savedServer.status !== "connected"
+    && (savedServer.tools?.length ?? 0) === 0
+  ));
+  if (savedUsesLegacyDefault) {
+    return { ...defaultServer, enabled: savedServer.enabled };
+  }
   return {
     ...defaultServer,
     ...savedServer,
@@ -252,6 +426,42 @@ function persistAppSettings(settings: AppSettings): void {
   window.localStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
 }
 
+function loadProjectWorkTimers(): Record<string, number> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(PROJECT_WORK_TIMERS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, number>;
+    return Object.fromEntries(Object.entries(parsed).map(([key, value]) => [key, Math.max(0, Number(value) || 0)]));
+  } catch {
+    return {};
+  }
+}
+
+function persistProjectWorkTimers(timers: Record<string, number>): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(PROJECT_WORK_TIMERS_STORAGE_KEY, JSON.stringify(timers));
+}
+
+function pushLiveFileActivity(items: LiveFileActivity[], next: LiveFileActivity, limit = 12): LiveFileActivity[] {
+  const withoutDuplicate = items.filter((item) => !(item.path === next.path && item.agentId === next.agentId));
+  return [next, ...withoutDuplicate].slice(0, limit);
+}
+
+function createOperatorPrompt(text: string, targetAgent?: AgentConfig, settings?: AppSettings): string {
+  const clean = text.trim();
+  if (!targetAgent) return clean;
+  if (!settings?.operatorAssistantEnabled) {
+    return `Вопрос оператора адресован агенту «${targetAgent.name}» (${targetAgent.role}). Ответь именно на него.\n\n${clean}`;
+  }
+  return [
+    "Запрос оператора передан через проджект-менеджера очереди.",
+    `Адресат: «${targetAgent.name}» (${targetAgent.role}).`,
+    "Сначала кратко уточни, как понял просьбу, затем дай полезный ответ или внеси изменение в рамках своей роли.",
+    clean,
+  ].join("\n\n");
+}
+
 function createCloudSettingsSnapshot(state: {
   providers: ProviderConfig[];
   agents: AgentConfig[];
@@ -337,6 +547,35 @@ class ModelFallbackError extends Error {
   }
 }
 
+class AgentLeaseTimeoutError extends Error {
+  constructor(readonly agentName: string, readonly timeoutSec: number) {
+    super(`Agent ${agentName} heartbeat expired after ${timeoutSec}s`);
+    this.name = "AgentLeaseTimeoutError";
+  }
+}
+
+class AgentEmptyOutputError extends Error {
+  constructor(readonly agentName: string) {
+    super(`Agent ${agentName} returned no writable file blocks`);
+    this.name = "AgentEmptyOutputError";
+  }
+}
+
+function isRecoverableAgentFailure(error: unknown): boolean {
+  return error instanceof AgentLeaseTimeoutError || error instanceof ModelFallbackError || error instanceof AgentEmptyOutputError;
+}
+
+function withAgentLease<T>(promise: Promise<T>, agent: AgentConfig, timeoutSec: number): Promise<T> {
+  if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) return promise;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new AgentLeaseTimeoutError(agent.name, timeoutSec)), timeoutSec * 1000);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 function modelLabel(provider: ProviderConfig, modelId: string): string {
   return provider.models.find((model) => model.id === modelId)?.label ?? modelId;
 }
@@ -349,20 +588,20 @@ function completionCandidates(agent: AgentConfig, providers: ProviderConfig[], f
   const primaryProvider = providers.find((provider) => provider.id === agent.providerId);
   const candidates: CompletionCandidate[] = [];
 
-  if (primaryProvider) {
+  if (primaryProvider && providerCanReceiveTraffic(primaryProvider)) {
     candidates.push({ provider: primaryProvider, modelId: agent.modelId });
   }
 
   if (!fallbackEnabled) return candidates;
 
-  if (primaryProvider && primaryProvider.status !== "not-configured") {
+  if (primaryProvider && providerCanReceiveTraffic(primaryProvider)) {
     for (const model of primaryProvider.models) {
       if (model.id !== agent.modelId) candidates.push({ provider: primaryProvider, modelId: model.id });
     }
   }
 
   for (const provider of providers) {
-    if (provider.id === primaryProvider?.id || provider.status === "not-configured") continue;
+    if (provider.id === primaryProvider?.id || !providerCanReceiveTraffic(provider)) continue;
     for (const model of provider.models) candidates.push({ provider, modelId: model.id });
   }
 
@@ -388,7 +627,9 @@ async function completeWithModelFallback(
   fallbackEnabled: boolean,
 ): Promise<CompletionWithFallbackResult> {
   const candidates = completionCandidates(agent, providers, fallbackEnabled);
-  if (!candidates.length) throw new Error("Провайдер агента не найден.");
+  if (!candidates.length) {
+    throw new Error("\u041d\u0435\u0442 \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0433\u043e \u043f\u0440\u043e\u0432\u0430\u0439\u0434\u0435\u0440\u0430 \u0441 \u0437\u0435\u043b\u0451\u043d\u044b\u043c \u0441\u0442\u0430\u0442\u0443\u0441\u043e\u043c \u0434\u043b\u044f \u0430\u0433\u0435\u043d\u0442\u0430. \u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0438 \u043f\u0440\u043e\u0432\u0430\u0439\u0434\u0435\u0440 \u043d\u0430 \u044d\u043a\u0440\u0430\u043d\u0435 \u041f\u0440\u043e\u0432\u0430\u0439\u0434\u0435\u0440\u044b \u0438\u043b\u0438 \u0432\u044b\u0431\u0435\u0440\u0438 \u0434\u0440\u0443\u0433\u043e\u0433\u043e \u0430\u0433\u0435\u043d\u0442\u0430.");
+  }
 
   const attempts: CompletionAttempt[] = [];
   for (const candidate of candidates) {
@@ -424,9 +665,9 @@ async function completeWithModelFallback(
 
   const details = attempts
     .slice(0, 6)
-    .map((attempt) => `${attempt.providerName}/${attempt.modelLabel}: ${attempt.error ?? "нет текста ошибки"}`)
+    .map((attempt) => `${attempt.providerName}/${attempt.modelLabel}: ${attempt.error ?? "\u043d\u0435\u0442 \u0442\u0435\u043a\u0441\u0442\u0430 \u043e\u0448\u0438\u0431\u043a\u0438"}`)
     .join("; ");
-  throw new ModelFallbackError((fallbackEnabled ? "Все fallback-модели не ответили. " : "") + details, attempts);
+  throw new ModelFallbackError((fallbackEnabled ? "\u0412\u0441\u0435 fallback-\u043c\u043e\u0434\u0435\u043b\u0438 \u043d\u0435 \u043e\u0442\u0432\u0435\u0442\u0438\u043b\u0438. " : "") + details, attempts);
 }
 
 function fallbackNotice(attempts: CompletionAttempt[]): string {
@@ -656,6 +897,15 @@ interface AppState {
   lastWorkspaceInit?: WorkspaceInitResult;
   activeRunMode?: AgentRunMode;
   lastRunFilesWritten?: number;
+  liveFileActivity: LiveFileActivity[];
+  queuedAgentQuestions: QueuedAgentQuestion[];
+  agentDialogMessages: AgentDialogMessage[];
+  agentDialogOpen: boolean;
+  agentDialogBusy: boolean;
+  agentDialogAgentId?: string;
+  projectWorkTimers: Record<string, number>;
+  agentRunCheckpoints: AgentRunCheckpoint[];
+  activeWorkStartedAt?: string;
   autoRunning: boolean;
   busy: boolean;
   setScreen: (screen: ScreenId) => void;
@@ -691,8 +941,13 @@ interface AppState {
   clearArchiveMemory: () => void;
   deleteArchive: () => void;
   setSessionMode: (mode: SessionConfig["mode"]) => void;
-  runTeam: (prompt?: string, mode?: AgentRunMode) => Promise<void>;
+  runTeam: (prompt?: string, mode?: AgentRunMode, targetAgentId?: string) => Promise<void>;
   runAuto: (prompt?: string) => Promise<void>;
+  enqueueAgentQuestion: (text: string, targetAgentId?: string) => Promise<void>;
+  clearQueuedAgentQuestion: (questionId: string) => void;
+  runAgentDialogQuestion: (text: string, targetAgentId?: string, echoUser?: boolean) => Promise<void>;
+  setAgentDialogOpen: (open: boolean) => void;
+  clearAgentDialog: () => void;
   updateArtifact: (patch: Partial<PlanArtifact>) => void;
   selectWorkspaceFolder: () => Promise<string | undefined>;
   clearWorkspaceFolder: () => void;
@@ -731,6 +986,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   workspacePath: loadWorkspacePath(),
   activeRunMode: undefined,
   lastRunFilesWritten: undefined,
+  liveFileActivity: [],
+  queuedAgentQuestions: [],
+  agentDialogMessages: [],
+  agentDialogOpen: false,
+  agentDialogBusy: false,
+  agentDialogAgentId: undefined,
+  projectWorkTimers: loadProjectWorkTimers(),
+  agentRunCheckpoints: [],
+  activeWorkStartedAt: undefined,
   autoRunning: false,
   busy: false,
   setScreen: (screen) => set({ screen }),
@@ -1013,6 +1277,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       { providerId, secret: trimmedSecret },
       () => "keychain://RamTeamAi/" + providerId,
     );
+
     set((state) => {
       const providers = state.providers.map((item) => (item.id === providerId
         ? updateProviderMonitoring({ ...item, keyRef, maskedKey: maskSecret(trimmedSecret), status: "connected" as const })
@@ -1038,16 +1303,39 @@ export const useAppStore = create<AppState>((set, get) => ({
     persistProviders(hydrated);
     set({ providers: hydrated });
   },
-  refreshProviderMonitoring: (providerId) => set((state) => {
-    const providers = state.providers.map((provider) => {
-      if (providerId && provider.id !== providerId) return provider;
-      // Re-stamp the "обновлено" time without fabricating metrics — real numbers
-      // only change when an actual request or connection test runs.
-      return { ...provider, monitoring: { ...ensureProviderMonitoring(provider, provider.monitoring), updatedAt: new Date().toISOString() } };
+  refreshProviderMonitoring: (providerId) => {
+    const candidates = get().providers.filter((provider) => (!providerId || provider.id === providerId) && provider.status !== "not-configured");
+    set((state) => {
+      const providers = state.providers.map((provider) => {
+        if (providerId && provider.id !== providerId) return provider;
+        return { ...provider, monitoring: { ...ensureProviderMonitoring(provider, provider.monitoring), updatedAt: new Date().toISOString() } };
+      });
+      persistProviders(providers);
+      return { providers };
     });
-    persistProviders(providers);
-    return { providers };
-  }),
+
+    if (!get().appSettings.healthSupervisorEnabled) return;
+    void Promise.all(candidates.map(async (provider) => {
+      try {
+        const result = await testProviderConnection(provider);
+        set((state) => {
+          const providers = state.providers.map((item) => item.id === provider.id
+            ? updateProviderMonitoring(item, { tokens: 0, latencyMs: result.latencyMs, failed: !result.ok, error: result.ok ? undefined : result.message })
+            : item);
+          persistProviders(providers);
+          return { providers };
+        });
+      } catch (error) {
+        set((state) => {
+          const providers = state.providers.map((item) => item.id === provider.id
+            ? updateProviderMonitoring(item, { tokens: 0, failed: true, error: summarizeAttemptError(error) })
+            : item);
+          persistProviders(providers);
+          return { providers };
+        });
+      }
+    }));
+  },
   testProvider: async (providerId) => {
     const provider = get().providers.find((item) => item.id === providerId);
     if (!provider) return;
@@ -1056,7 +1344,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => {
       const nextStatus: ProviderConfig["status"] = result.ok ? "connected" : "warning";
       const providers = state.providers.map((item) => item.id === providerId
-        ? updateProviderMonitoring({ ...item, status: nextStatus }, { tokens: 0, latencyMs: result.latencyMs, failed: !result.ok })
+        ? updateProviderMonitoring({ ...item, status: nextStatus }, { tokens: 0, latencyMs: result.latencyMs, failed: !result.ok, error: result.ok ? undefined : result.message })
         : item);
       persistProviders(providers);
       return { busy: false, providers };
@@ -1317,11 +1605,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     persistSessions(sessions);
     return { session, sessions };
   }),
-  runTeam: async (prompt = "", mode = "planning") => {
+  runTeam: async (prompt = "", mode = "planning", targetAgentId) => {
     let { agents, providers, topology, session, sessions, projects, activeProjectId, mcpServers, appSettings } = get();
     if (!activeProjectId || !get().activeSessionId) return;
     const trimmedPrompt = prompt.trim();
+    const runStartedAt = new Date().toISOString();
+    const runId = "run-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
     let implementationRootPath: string | undefined;
+    let workspaceSnapshot: string | undefined;
     const hasUserContext = session.messages.some((message) => message.author === "user" && message.text.trim());
     if (!trimmedPrompt && !hasUserContext) {
       const warning = "Сначала отправьте задачу или контекст проекта. Без этого агенты не запускаются: моделям нечего разбирать.";
@@ -1352,7 +1643,37 @@ export const useAppStore = create<AppState>((set, get) => ({
       const implementationPlan = renderImplementationPlan(artifact, assignments);
       await writeWorkspaceTextFile(result.rootPath, "IMPLEMENTATION.md", implementationPlan, { overwrite: true });
       await writeWorkspaceTextFile(result.rootPath, "docs/agent-tasks.md", implementationPlan, { overwrite: true });
-      set({ lastBuild: result, workspacePath: result.rootPath });
+      const scaffoldActivity: LiveFileActivity[] = [
+        ...result.files.slice(0, 8).map((path) => ({
+          id: "file-" + Date.now() + "-" + path,
+          agentName: "Project Builder",
+          path,
+          action: "create" as const,
+          status: "written" as const,
+          updatedAt: new Date().toISOString(),
+        })),
+        {
+          id: "file-" + Date.now() + "-IMPLEMENTATION.md",
+          agentName: "Project Builder",
+          path: "IMPLEMENTATION.md",
+          action: "plan" as const,
+          status: "written" as const,
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          id: "file-" + Date.now() + "-docs/agent-tasks.md",
+          agentName: "Project Builder",
+          path: "docs/agent-tasks.md",
+          action: "plan" as const,
+          status: "written" as const,
+          updatedAt: new Date().toISOString(),
+        },
+      ];
+      set({ lastBuild: result, workspacePath: result.rootPath, liveFileActivity: scaffoldActivity });
+
+      // Snapshot what is already on disk so agents edit real files instead of
+      // regenerating them blindly (the root cause of "can create but not edit").
+      workspaceSnapshot = await buildWorkspaceSnapshot(result.rootPath);
 
       agents = get().agents;
       providers = get().providers;
@@ -1366,23 +1687,57 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const now = new Date().toISOString();
+    const addressedAgent = targetAgentId ? agents.find((agent) => agent.id === targetAgentId) : undefined;
+    const promptForModel = addressedAgent ? createOperatorPrompt(trimmedPrompt, addressedAgent, appSettings) : trimmedPrompt;
+    const visiblePrompt = addressedAgent ? `@${addressedAgent.name}: ${trimmedPrompt}` : trimmedPrompt;
     const derivedTitle = trimmedPrompt ? titleFromPrompt(trimmedPrompt) : session.title;
+    const targetAgent = addressedAgent;
+    const activeAgents = targetAgent
+      ? [targetAgent]
+      : topology.kind === "pipeline"
+      ? agents
+      : mode === "implementation"
+        ? selectImplementationAgents(agents, 3)
+        : agents.slice(0, Math.min(agents.length, 3));
+
     const userMessage: ChatMessage | undefined = trimmedPrompt
       ? {
         id: "user-" + Date.now(),
         author: "user",
-        text: trimmedPrompt,
+        text: visiblePrompt,
         createdAt: new Date().toISOString(),
-        tokens: Math.max(24, Math.ceil(trimmedPrompt.length / 4)),
+        tokens: Math.max(24, Math.ceil(visiblePrompt.length / 4)),
       }
       : undefined;
-    const baseMessages = userMessage ? [...session.messages, userMessage] : session.messages;
+    const modelUserMessage = userMessage ? { ...userMessage, text: promptForModel, tokens: Math.max(24, Math.ceil(promptForModel.length / 4)) } : undefined;
+    const modelBaseMessages = modelUserMessage ? [...session.messages, modelUserMessage] : session.messages;
 
     // Once implementation starts the session leaves planning, otherwise the
     // "К чему пришли" planning summary keeps re-rendering and looks like a reset.
     const nextMode: SessionConfig["mode"] = mode === "implementation"
       ? "chat"
       : trimmedPrompt ? session.mode : "planning";
+    const initialBaseMessages = userMessage ? [...session.messages, userMessage] : session.messages;
+    const implementationIntroMessages: ChatMessage[] = mode === "implementation"
+      ? activeAgents.map((agent, index) => {
+        const assignment = planImplementationAssignments(get().artifact, agents).find((item) => item.owner === agent.name || item.role === agent.role);
+        const text = [
+          `Беру в работу: ${assignment?.summary ?? "следующий шаг реализации."}`,
+          assignment?.deliverables.length ? "Результаты: " + assignment.deliverables.join(", ") : undefined,
+          implementationRootPath ? "Рабочая папка: " + implementationRootPath : undefined,
+        ].filter(Boolean).join("\n");
+        return {
+          id: "agent-intro-" + runId + "-" + agent.id + "-" + index,
+          author: agent.id,
+          agentRole: agent.role,
+          text,
+          createdAt: new Date().toISOString(),
+          tokens: Math.max(24, Math.ceil(text.length / 4)),
+          actions: [{ kind: "plan", label: "Взял задачу" }],
+        };
+      })
+      : [];
+    const baseMessages = implementationIntroMessages.length ? [...initialBaseMessages, ...implementationIntroMessages] : initialBaseMessages;
     const baseSession: SessionConfig = {
       ...session,
       title: trimmedPrompt && isDefaultSessionTitle(session.title) ? derivedTitle : session.title,
@@ -1400,17 +1755,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       : project);
 
-    const activeAgents = topology.kind === "pipeline"
-      ? agents
-      : mode === "implementation"
-        ? selectImplementationAgents(agents, 3)
-        : agents.slice(0, Math.min(agents.length, 3));
     persistProjects(nextProjects);
     persistSessions(nextSessions);
 
     set({
       busy: true,
       activeRunMode: mode,
+      activeWorkStartedAt: get().activeWorkStartedAt ?? runStartedAt,
+      liveFileActivity: mode === "planning" ? [] : get().liveFileActivity,
       screen: "chat",
       projects: nextProjects,
       sessions: nextSessions,
@@ -1423,6 +1775,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const messages: ChatMessage[] = [];
     let totalFilesWritten = 0;
+    const firedAgentIds = new Set<string>();
+    // Distribute plan steps and track files written so each agent works its own
+    // slice instead of colliding on the same files within the round.
+    const roundAssignments = mode === "implementation" ? planImplementationAssignments(get().artifact, activeAgents) : [];
+    const stepBuckets = mode === "implementation" ? partitionStepsAcrossAgents(get().artifact.steps, activeAgents) : new Map<string, string[]>();
+    const writtenThisRound = new Set<string>();
     for (const agent of activeAgents) {
       set((state) => ({
         agents: state.agents.map((item) => item.id === agent.id
@@ -1430,17 +1788,58 @@ export const useAppStore = create<AppState>((set, get) => ({
           : item),
       }));
 
-      const context = [...baseMessages, ...messages];
-      let text: string;
+      const snapshotMessage: ChatMessage[] = workspaceSnapshot
+        ? [{
+          id: "workspace-snapshot-" + agent.id,
+          author: "user",
+          text: workspaceSnapshot,
+          createdAt: new Date().toISOString(),
+          tokens: Math.ceil(workspaceSnapshot.length / 4),
+        }]
+        : [];
+      const directiveMessage: ChatMessage[] = mode === "implementation"
+        ? [{
+          id: "impl-directive-" + runId + "-" + agent.id,
+          author: "system",
+          text: buildAgentRoundDirective(
+            agent,
+            stepBuckets.get(agent.id) ?? [],
+            roundAssignments.find((item) => item.id === agent.id) ?? roundAssignments.find((item) => item.role === agent.role),
+            [...writtenThisRound],
+          ),
+          createdAt: new Date().toISOString(),
+          tokens: 80,
+        }]
+        : [];
+      const context = [...modelBaseMessages, ...snapshotMessage, ...messages, ...directiveMessage];
+      let text = "";
       let tokens = 0;
       let latencyMs: number | undefined;
       let attempts: CompletionAttempt[] = [];
       const actions: MessageAction[] = [];
+      let checkpoint = createAgentCheckpoint({
+        runId,
+        agent,
+        mode,
+        step: `${mode}:${agent.id}`,
+        leaseTimeoutSec: appSettings.agentLeaseTimeoutSec,
+      });
+      set((state) => ({
+        agentRunCheckpoints: [...state.agentRunCheckpoints.filter((item) => item.runId !== runId || item.agentId !== agent.id), checkpoint].slice(-12),
+      }));
       try {
         const agentWithMcpContext = agent.tools.includes("mcp")
           ? { ...agent, systemPrompt: agent.systemPrompt + "\n\n" + formatMcpToolsForPrompt(mcpServers) }
           : agent;
-        const completion = await completeWithModelFallback(providers, agentWithMcpContext, context, mode, appSettings.modelFallbackEnabled);
+        const completion = await withAgentLease(
+          completeWithModelFallback(providers, agentWithMcpContext, context, mode, appSettings.modelFallbackEnabled),
+          agent,
+          appSettings.healthSupervisorEnabled ? appSettings.agentLeaseTimeoutSec : 0,
+        );
+        checkpoint = heartbeatCheckpoint(checkpoint, appSettings.agentLeaseTimeoutSec);
+        set((state) => ({
+          agentRunCheckpoints: state.agentRunCheckpoints.map((item) => item.id === checkpoint.id ? { ...checkpoint, status: "idle", updatedAt: new Date().toISOString() } : item),
+        }));
         attempts = completion.attempts;
         const notice = fallbackNotice(attempts);
         if (notice) {
@@ -1457,18 +1856,53 @@ export const useAppStore = create<AppState>((set, get) => ({
           const writtenFiles: string[] = [];
           const failedFiles: string[] = [];
           for (const file of fileBlocks.slice(0, 8)) {
+            const activity: LiveFileActivity = {
+              id: "file-" + Date.now() + "-" + agent.id + "-" + file.path,
+              agentId: agent.id,
+              agentName: agent.name,
+              path: file.path,
+              action: "edit",
+              status: "pending",
+              updatedAt: new Date().toISOString(),
+            };
+            set((state) => ({ liveFileActivity: pushLiveFileActivity(state.liveFileActivity, activity) }));
+          }
+          for (const file of fileBlocks.slice(0, 8)) {
             try {
               const writeResult = await writeWorkspaceTextFile(implementationRootPath, file.path, file.content, { overwrite: true });
               writtenFiles.push(writeResult.path);
               actions.push({ kind: "write", label: writeResult.path });
+              set((state) => ({
+                liveFileActivity: pushLiveFileActivity(state.liveFileActivity, {
+                  id: "file-" + Date.now() + "-" + agent.id + "-" + writeResult.path,
+                  agentId: agent.id,
+                  agentName: agent.name,
+                  path: writeResult.path,
+                  action: writeResult.created ? "create" : "edit",
+                  status: "written",
+                  updatedAt: new Date().toISOString(),
+                }),
+              }));
             } catch (error) {
               // Surface the failure so a real folder/permission problem is visible instead of looking like silence.
               const reason = summarizeAttemptError(error);
               failedFiles.push(file.path + " — " + reason);
               actions.push({ kind: "error", label: file.path, detail: reason });
+              set((state) => ({
+                liveFileActivity: pushLiveFileActivity(state.liveFileActivity, {
+                  id: "file-" + Date.now() + "-" + agent.id + "-" + file.path,
+                  agentId: agent.id,
+                  agentName: agent.name,
+                  path: file.path,
+                  action: "error",
+                  status: "failed",
+                  updatedAt: new Date().toISOString(),
+                }),
+              }));
             }
           }
           totalFilesWritten += writtenFiles.length;
+          writtenFiles.forEach((path) => writtenThisRound.add(path));
           if (writtenFiles.length) {
             text += "\n\n✅ Записано в рабочую папку: " + writtenFiles.join(", ");
           }
@@ -1478,12 +1912,141 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (!fileBlocks.length) {
             actions.push({ kind: "idle", label: "Код не записан", detail: "Ответ без блока «Файл: путь» + код" });
             text += "\n\n⚠️ В ответе нет ни одного блока «Файл: путь» + код, поэтому на диск ничего не записано. Папка доступна для записи (план уже записан в неё), проблема в том, что агент описал план вместо кода. Нажмите «Запустить агентов реализации» ещё раз — промпт усилен, чтобы агент вернул сам код.";
+            throw new AgentEmptyOutputError(agent.name);
           }
           tokens = Math.max(tokens, Math.ceil(text.length / 4));
         } else if (mode === "planning") {
           actions.push({ kind: "plan", label: "Предложил план" });
         }
       } catch (error) {
+        const staleCheckpoint = checkpointIsStale(checkpoint) || error instanceof AgentLeaseTimeoutError;
+        const recoverableFailure = staleCheckpoint || isRecoverableAgentFailure(error);
+        firedAgentIds.add(agent.id);
+        const replacementAgent = appSettings.healthSupervisorEnabled && recoverableFailure
+          ? selectRecoveryAgent({ failedAgent: agent, agents: get().agents, providers: get().providers, excludedAgentIds: firedAgentIds })
+          : undefined;
+        if (replacementAgent) {
+          const failureReason = summarizeAttemptError(error);
+          checkpoint = {
+            ...recoverCheckpoint(checkpoint, replacementAgent, appSettings.agentLeaseTimeoutSec),
+            failureReason,
+            handoffContext: context.map((message) => `${message.author}: ${message.text}`).join("\n").slice(-4_000),
+            replacementHistory: [
+              ...(checkpoint.replacementHistory ?? []),
+              {
+                previousAgentId: agent.id,
+                replacementAgentId: replacementAgent.id,
+                reason: failureReason,
+                step: checkpoint.step,
+                status: "recovered" as const,
+                attempts: checkpoint.attempts + 1,
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          };
+          firedAgentIds.add(replacementAgent.id);
+          set((state) => ({
+            agentRunCheckpoints: state.agentRunCheckpoints.map((item) => item.id === checkpoint.id ? checkpoint : item),
+            agents: state.agents.map((item) => item.id === agent.id
+              ? { ...item, status: "fired" }
+              : item.id === replacementAgent.id
+                ? { ...item, status: "hired" }
+                : item),
+          }));
+          try {
+            const recoveryPrompt: ChatMessage = {
+              id: "supervisor-recovery-" + Date.now() + "-" + replacementAgent.id,
+              author: "system",
+              text: [
+                "Supervisor recovery checkpoint.",
+                `Previous agent ${agent.name} stopped at ${checkpoint.step}: ${summarizeAttemptError(error)}.`,
+                "Continue the same task from the latest context. If this is implementation mode, return full file blocks so the workspace can be written.",
+              ].join("\n"),
+              createdAt: new Date().toISOString(),
+              tokens: 80,
+            };
+            const replacementWithMcpContext = replacementAgent.tools.includes("mcp")
+              ? { ...replacementAgent, systemPrompt: replacementAgent.systemPrompt + "\n\n" + formatMcpToolsForPrompt(mcpServers) }
+              : replacementAgent;
+            const completion = await withAgentLease(
+              completeWithModelFallback(get().providers, replacementWithMcpContext, [...context, recoveryPrompt], mode, appSettings.modelFallbackEnabled),
+              replacementAgent,
+              appSettings.agentLeaseTimeoutSec,
+            );
+            attempts = completion.attempts;
+            const notice = fallbackNotice(attempts);
+            const recoveryNotice = `🛟 Supervisor: ${agent.name} не ответил, задачу подхватил ${replacementAgent.name}.`;
+            actions.push({ kind: "fallback", label: "Агент заменён", detail: recoveryNotice });
+            if (notice) actions.push({ kind: "fallback", label: "Переключил модель", detail: notice });
+            text = [recoveryNotice, notice, completion.result.text].filter(Boolean).join("\n\n");
+            tokens = Math.max(completion.result.tokens, Math.ceil(text.length / 4));
+            latencyMs = completion.result.latencyMs;
+
+            if (mode === "implementation" && implementationRootPath) {
+              const fileBlocks = extractWorkspaceFileBlocks(text);
+              const writtenFiles: string[] = [];
+              const failedFiles: string[] = [];
+              for (const file of fileBlocks.slice(0, 8)) {
+                set((state) => ({ liveFileActivity: pushLiveFileActivity(state.liveFileActivity, {
+                  id: "file-" + Date.now() + "-" + replacementAgent.id + "-" + file.path,
+                  agentId: replacementAgent.id,
+                  agentName: replacementAgent.name,
+                  path: file.path,
+                  action: "edit",
+                  status: "pending",
+                  updatedAt: new Date().toISOString(),
+                }) }));
+                try {
+                  const writeResult = await writeWorkspaceTextFile(implementationRootPath, file.path, file.content, { overwrite: true });
+                  writtenFiles.push(writeResult.path);
+                  actions.push({ kind: "write", label: writeResult.path });
+                  set((state) => ({ liveFileActivity: pushLiveFileActivity(state.liveFileActivity, {
+                    id: "file-" + Date.now() + "-" + replacementAgent.id + "-" + writeResult.path,
+                    agentId: replacementAgent.id,
+                    agentName: replacementAgent.name,
+                    path: writeResult.path,
+                    action: writeResult.created ? "create" : "edit",
+                    status: "written",
+                    updatedAt: new Date().toISOString(),
+                  }) }));
+                } catch (writeError) {
+                  const reason = summarizeAttemptError(writeError);
+                  failedFiles.push(file.path + " — " + reason);
+                  actions.push({ kind: "error", label: file.path, detail: reason });
+                }
+              }
+              if (!fileBlocks.length) {
+                throw new AgentEmptyOutputError(replacementAgent.name);
+              }
+              totalFilesWritten += writtenFiles.length;
+              writtenFiles.forEach((path) => writtenThisRound.add(path));
+              if (writtenFiles.length) text += "\n\n✅ Записано резервным агентом: " + writtenFiles.join(", ");
+              if (failedFiles.length) text += "\n\n⚠️ Не удалось записать файлы: " + failedFiles.join("; ");
+            } else if (mode === "planning") {
+              actions.push({ kind: "plan", label: "План продолжен резервным агентом" });
+            }
+            set((state) => ({
+              agentRunCheckpoints: state.agentRunCheckpoints.map((item) => item.id === checkpoint.id ? { ...heartbeatCheckpoint(checkpoint, appSettings.agentLeaseTimeoutSec), status: "idle" } : item),
+              agents: state.agents.map((item) => item.id === replacementAgent.id ? { ...item, status: "done" } : item),
+            }));
+          } catch (recoveryError) {
+            checkpoint = failCheckpoint(checkpoint, summarizeAttemptError(recoveryError));
+            set((state) => ({
+              agentRunCheckpoints: state.agentRunCheckpoints.map((item) => item.id === checkpoint.id ? checkpoint : item),
+              agents: state.agents.map((item) => item.id === replacementAgent.id ? { ...item, status: "fired" } : item),
+            }));
+            error = recoveryError;
+          }
+        } else if (recoverableFailure && appSettings.healthSupervisorEnabled) {
+          checkpoint = partialCheckpoint(checkpoint, "No healthy replacement agent is available: " + summarizeAttemptError(error));
+          set((state) => ({
+            agentRunCheckpoints: state.agentRunCheckpoints.map((item) => item.id === checkpoint.id ? checkpoint : item),
+            agents: state.agents.map((item) => item.id === agent.id ? { ...item, status: "fired" } : item),
+          }));
+        }
+        if (tokens > 0) {
+          // Recovery succeeded; skip normal error rendering.
+        } else {
         if (error instanceof ModelFallbackError) {
           attempts = error.attempts;
         } else if (error instanceof Error && !attempts.length) {
@@ -1500,6 +2063,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         tokens = Math.max(24, Math.ceil(text.length / 4));
         actions.length = 0;
         actions.push({ kind: "error", label: "\u041e\u0448\u0438\u0431\u043a\u0430 API", detail: summarizeAttemptError(error) });
+        checkpoint = failCheckpoint(checkpoint, summarizeAttemptError(error));
+        set((state) => ({ agentRunCheckpoints: state.agentRunCheckpoints.map((item) => item.id === checkpoint.id ? checkpoint : item) }));
+        }
       }
 
       if (attempts.length) {
@@ -1511,6 +2077,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               tokens: attempt.ok ? attempt.tokens ?? 0 : 0,
               latencyMs: attempt.latencyMs,
               failed: !attempt.ok,
+              error: attempt.error,
             }), provider);
           });
           persistProviders(providers);
@@ -1518,7 +2085,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
       }
 
-      messages.push({
+      const completedMessage: ChatMessage = {
         id: "agent-" + Date.now() + "-" + agent.id,
         author: agent.id,
         agentRole: agent.role,
@@ -1527,11 +2094,44 @@ export const useAppStore = create<AppState>((set, get) => ({
         tokens,
         tool: agent.tools.includes("mcp") ? "mcp" : undefined,
         actions: actions.length ? actions : undefined,
+      };
+      messages.push(completedMessage);
+
+      set((state) => {
+        const partialMessages = [...baseMessages, ...messages];
+        const partialSession: SessionConfig = {
+          ...state.session,
+          mode: nextMode,
+          messages: partialMessages,
+          tokensUsed: partialMessages.reduce((sum, message) => sum + message.tokens, 0),
+        };
+        const partialSessions = replaceSession(state.sessions, partialSession);
+        persistSessions(partialSessions);
+        return {
+          agents: state.agents.map((item) => item.id === agent.id ? { ...item, status: "done" } : item),
+          session: partialSession,
+          sessions: partialSessions,
+        };
       });
     }
 
+    let finalReadiness: ReturnType<typeof validateProjectCompleteness> | undefined;
+    if (mode === "implementation" && implementationRootPath) {
+      const workspaceFiles = await listWorkspaceFiles(implementationRootPath).catch(() => []);
+      const stubFiles = await detectScaffoldStubFiles(implementationRootPath, workspaceFiles);
+      finalReadiness = validateProjectCompleteness(get().artifact, workspaceFiles, undefined, stubFiles);
+    }
+    const implementationComplete = !finalReadiness || !["partial", "failed"].includes(finalReadiness.status);
+
     set((state) => {
       const nextMessages = [...baseMessages, ...messages];
+      const finishedAt = Date.now();
+      const startedAt = state.activeWorkStartedAt ? Date.parse(state.activeWorkStartedAt) : Date.parse(runStartedAt);
+      const elapsedMs = Number.isFinite(startedAt) ? Math.max(0, finishedAt - startedAt) : 0;
+      const projectWorkTimers = {
+        ...state.projectWorkTimers,
+        [activeProjectId]: (state.projectWorkTimers[activeProjectId] ?? 0) + elapsedMs,
+      };
       const session: SessionConfig = {
         ...state.session,
         mode: nextMode,
@@ -1539,17 +2139,35 @@ export const useAppStore = create<AppState>((set, get) => ({
         tokensUsed: nextMessages.reduce((sum, message) => sum + message.tokens, 0),
       };
       const sessions = replaceSession(state.sessions, session);
+      const projects = mode === "implementation"
+        ? state.projects.map((project) => project.id === activeProjectId ? { ...project, status: implementationComplete ? "built" as const : "active" as const, updatedAt: new Date().toISOString() } : project)
+        : state.projects;
       persistSessions(sessions);
+      if (mode === "implementation") persistProjects(projects);
+      persistProjectWorkTimers(projectWorkTimers);
       return {
         busy: false,
         activeRunMode: undefined,
+        activeWorkStartedAt: undefined,
+        projectWorkTimers,
         lastRunFilesWritten: mode === "implementation" ? totalFilesWritten : state.lastRunFilesWritten,
+        lastBuild: finalReadiness && state.lastBuild ? { ...state.lastBuild, readiness: finalReadiness } : state.lastBuild,
         agents: state.agents.map((agent) => ({ ...agent, status: "done" })),
+        projects,
         session,
         sessions,
-        artifact: mode === "planning" ? synthesizePlan(nextMessages, state.artifact) : state.artifact,
+        artifact: mode === "planning"
+          ? synthesizePlan(nextMessages, state.artifact)
+          : mode === "implementation"
+            ? { ...state.artifact, status: implementationComplete ? "built" as const : "scaffolded" as const }
+            : state.artifact,
       };
     });
+    const nextQueuedQuestion = get().queuedAgentQuestions[0];
+    if (nextQueuedQuestion && !get().autoRunning) {
+      set((state) => ({ queuedAgentQuestions: state.queuedAgentQuestions.filter((item) => item.id !== nextQueuedQuestion.id) }));
+      await get().runAgentDialogQuestion(nextQueuedQuestion.text, nextQueuedQuestion.targetAgentId, false);
+    }
   },
   runAuto: async (prompt = "") => {
     if (get().busy || get().autoRunning) return;
@@ -1567,20 +2185,190 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 2. Scaffold the project and run the first implementation round. This may
       // bail early if the user cancels the required workspace-folder picker.
       await get().startAgentImplementation();
+      if (!get().appSettings.autoMode) return;
 
-      // 3. Keep running implementation rounds while the team writes new files.
+      // 3. Keep running implementation rounds until the project actually
+      // satisfies its completeness contract — not just until tokens run out.
       const maxRounds = Math.max(1, get().appSettings.autoMaxRounds || 1);
+      // Tolerate a single stalled round (e.g. a model that answered with prose
+      // instead of file blocks); only give up after two empties in a row so one
+      // weak answer no longer aborts the whole build.
+      let stalledRounds = get().lastRunFilesWritten ? 0 : 1;
       for (let round = 1; round < maxRounds; round += 1) {
+        if (!get().appSettings.autoMode) break;
         if (get().busy) break;
-        // Stop once a round produces no files: either the project is done or the
-        // models went idle, and looping further would just burn tokens.
-        if (!get().lastRunFilesWritten) break;
+        // Real exit: the build is complete, so further rounds add nothing.
+        if (get().artifact.status === "built") break;
+        // Genuinely stuck: two consecutive rounds wrote nothing.
+        if (stalledRounds >= 2) break;
         await get().runTeam(IMPLEMENTATION_ROUND_PROMPT, "implementation");
+        stalledRounds = get().lastRunFilesWritten ? 0 : stalledRounds + 1;
       }
     } finally {
       set({ autoRunning: false });
+      const nextQueuedQuestion = get().queuedAgentQuestions[0];
+      if (nextQueuedQuestion && !get().busy) {
+        set((state) => ({ queuedAgentQuestions: state.queuedAgentQuestions.filter((item) => item.id !== nextQueuedQuestion.id) }));
+        await get().runAgentDialogQuestion(nextQueuedQuestion.text, nextQueuedQuestion.targetAgentId, false);
+      }
     }
   },
+  runAgentDialogQuestion: async (text, targetAgentId, echoUser = true) => {
+    const trimmed = text.trim();
+    if (!trimmed || get().busy || get().autoRunning || get().agentDialogBusy) return;
+
+    const { agents, providers, session, mcpServers, appSettings } = get();
+    const targetAgent = agents.find((agent) => agent.id === (targetAgentId || appSettings.operatorDefaultAgentId)) ?? agents[0];
+    if (!targetAgent) return;
+
+    const now = new Date().toISOString();
+    const visiblePrompt = `@${targetAgent.name}: ${trimmed}`;
+    const promptForModel = createOperatorPrompt(trimmed, targetAgent, appSettings);
+    const userMessage: AgentDialogMessage = {
+      id: "agent-dialog-user-" + Date.now(),
+      author: "user",
+      agentId: targetAgent.id,
+      text: visiblePrompt,
+      createdAt: now,
+      tokens: Math.max(24, Math.ceil(visiblePrompt.length / 4)),
+    };
+    const modelUserMessage: ChatMessage = {
+      id: userMessage.id,
+      author: "user",
+      text: promptForModel,
+      createdAt: now,
+      tokens: Math.max(24, Math.ceil(promptForModel.length / 4)),
+    };
+
+    set((state) => ({
+      agentDialogOpen: true,
+      agentDialogBusy: true,
+      agentDialogAgentId: targetAgent.id,
+      agentDialogMessages: echoUser ? [...state.agentDialogMessages, userMessage] : state.agentDialogMessages,
+      agents: state.agents.map((agent) => ({
+        ...agent,
+        status: agent.id === targetAgent.id ? (agent.tools.includes("mcp") ? "mcp" : "typing") : agent.status,
+      })),
+    }));
+
+    let answerText: string;
+    let tokens = 0;
+    let attempts: CompletionAttempt[] = [];
+    const actions: MessageAction[] = [];
+    try {
+      const agentWithMcpContext = targetAgent.tools.includes("mcp")
+        ? { ...targetAgent, systemPrompt: targetAgent.systemPrompt + "\n\n" + formatMcpToolsForPrompt(mcpServers) }
+        : targetAgent;
+      const completion = await completeWithModelFallback(
+        providers,
+        agentWithMcpContext,
+        [...session.messages, modelUserMessage],
+        "planning",
+        appSettings.modelFallbackEnabled,
+      );
+      attempts = completion.attempts;
+      const notice = fallbackNotice(attempts);
+      if (notice) actions.push({ kind: "fallback", label: "Переключил модель", detail: notice });
+      if (targetAgent.tools.includes("mcp")) actions.push({ kind: "search", label: "Запрос через MCP" });
+      actions.push({ kind: "plan", label: "Ответил в отдельном чате" });
+      answerText = notice ? notice + "\n\n" + completion.result.text : completion.result.text;
+      tokens = Math.max(completion.result.tokens, Math.ceil(answerText.length / 4));
+    } catch (error) {
+      if (error instanceof ModelFallbackError) {
+        attempts = error.attempts;
+      } else if (error instanceof Error && !attempts.length) {
+        attempts = completionCandidates(targetAgent, providers, appSettings.modelFallbackEnabled).slice(0, 1).map((candidate) => ({
+          providerId: candidate.provider.id,
+          providerName: candidate.provider.name,
+          modelId: candidate.modelId,
+          modelLabel: modelLabel(candidate.provider, candidate.modelId),
+          ok: false,
+          error: summarizeAttemptError(error),
+        }));
+      }
+      answerText = "Ошибка API: " + (error instanceof Error ? error.message : String(error));
+      tokens = Math.max(24, Math.ceil(answerText.length / 4));
+      actions.push({ kind: "error", label: "Ошибка API", detail: summarizeAttemptError(error) });
+    }
+
+    if (attempts.length) {
+      set((state) => {
+        const providers = state.providers.map((provider) => {
+          const providerAttempts = attempts.filter((attempt) => attempt.providerId === provider.id);
+          if (!providerAttempts.length) return provider;
+          return providerAttempts.reduce((current, attempt) => updateProviderMonitoring(current, {
+            tokens: attempt.ok ? attempt.tokens ?? 0 : 0,
+            latencyMs: attempt.latencyMs,
+            failed: !attempt.ok,
+            error: attempt.error,
+          }), provider);
+        });
+        persistProviders(providers);
+        return { providers };
+      });
+    }
+
+    const answer: AgentDialogMessage = {
+      id: "agent-dialog-answer-" + Date.now() + "-" + targetAgent.id,
+      author: "agent",
+      agentId: targetAgent.id,
+      agentRole: targetAgent.role,
+      text: answerText,
+      createdAt: new Date().toISOString(),
+      tokens,
+      tool: targetAgent.tools.includes("mcp") ? "mcp" : undefined,
+      actions: actions.length ? actions : undefined,
+    };
+
+    set((state) => ({
+      agentDialogBusy: false,
+      agentDialogMessages: [...state.agentDialogMessages, answer],
+      agents: state.agents.map((agent) => agent.id === targetAgent.id ? { ...agent, status: "done" } : agent),
+    }));
+
+    const nextQueuedQuestion = get().queuedAgentQuestions[0];
+    if (nextQueuedQuestion && !get().busy && !get().autoRunning) {
+      set((state) => ({ queuedAgentQuestions: state.queuedAgentQuestions.filter((item) => item.id !== nextQueuedQuestion.id) }));
+      await get().runAgentDialogQuestion(nextQueuedQuestion.text, nextQueuedQuestion.targetAgentId, false);
+    }
+  },
+  enqueueAgentQuestion: async (text, targetAgentId) => {
+    const trimmed = text.trim();
+    if (!trimmed || !get().activeSessionId) return;
+    const targetId = targetAgentId || get().appSettings.operatorDefaultAgentId;
+    const targetAgent = get().agents.find((agent) => agent.id === targetId);
+    if (get().busy || get().autoRunning || get().agentDialogBusy) {
+      const question: QueuedAgentQuestion = {
+        id: "queued-" + Date.now(),
+        text: trimmed,
+        mode: get().activeRunMode ?? "planning",
+        targetAgentId: targetId,
+        createdAt: new Date().toISOString(),
+      };
+      const visiblePrompt = targetAgent ? `@${targetAgent.name}: ${trimmed}` : trimmed;
+      const dialogMessage: AgentDialogMessage = {
+        id: "agent-dialog-user-" + Date.now(),
+        author: "user",
+        agentId: targetId,
+        text: visiblePrompt,
+        createdAt: question.createdAt,
+        tokens: Math.max(24, Math.ceil(visiblePrompt.length / 4)),
+      };
+      set((state) => ({
+        agentDialogOpen: true,
+        agentDialogAgentId: targetId,
+        queuedAgentQuestions: [...state.queuedAgentQuestions, question],
+        agentDialogMessages: [...state.agentDialogMessages, dialogMessage],
+      }));
+      return;
+    }
+    await get().runAgentDialogQuestion(trimmed, targetId);
+  },
+  clearQueuedAgentQuestion: (questionId) => set((state) => ({
+    queuedAgentQuestions: state.queuedAgentQuestions.filter((question) => question.id !== questionId),
+  })),
+  setAgentDialogOpen: (open) => set({ agentDialogOpen: open }),
+  clearAgentDialog: () => set({ agentDialogMessages: [], agentDialogOpen: false, agentDialogAgentId: undefined }),
   updateArtifact: (patch) => set((state) => ({ artifact: { ...state.artifact, ...patch, edited: true } })),
   selectWorkspaceFolder: async () => {
     const selected = await pickWorkspaceFolder(get().workspacePath);
@@ -1700,7 +2488,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const assignments = planImplementationAssignments(artifact, agents);
     const implementationPlan = renderImplementationPlan(artifact, assignments);
 
-    set({ busy: true, activeRunMode: "implementation" });
+    const runStartedAt = new Date().toISOString();
+    set({ busy: true, activeRunMode: "implementation", activeWorkStartedAt: get().activeWorkStartedAt ?? runStartedAt });
     try {
       const result = await buildProject(artifact, true, workspacePath);
       await writeWorkspaceTextFile(result.rootPath, "IMPLEMENTATION.md", implementationPlan, { overwrite: true });
@@ -1713,6 +2502,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       ].join("\n");
 
       set((state) => {
+        const finishedAt = Date.now();
+        const startedAt = state.activeWorkStartedAt ? Date.parse(state.activeWorkStartedAt) : Date.parse(runStartedAt);
+        const elapsedMs = Number.isFinite(startedAt) ? Math.max(0, finishedAt - startedAt) : 0;
+        const projectWorkTimers = {
+          ...state.projectWorkTimers,
+          [state.activeProjectId]: (state.projectWorkTimers[state.activeProjectId] ?? 0) + elapsedMs,
+        };
         const session = withSystemMessage(state.session, savedNote);
         const sessions = replaceSession(state.sessions, session);
         const now = new Date().toISOString();
@@ -1721,11 +2517,40 @@ export const useAppStore = create<AppState>((set, get) => ({
           : project);
         persistSessions(sessions);
         persistProjects(projects);
+        persistProjectWorkTimers(projectWorkTimers);
         return {
           busy: false,
           activeRunMode: undefined,
+          activeWorkStartedAt: undefined,
           screen: "chat",
           lastBuild: result,
+          liveFileActivity: [
+            ...result.files.slice(0, 8).map((path) => ({
+              id: "file-" + Date.now() + "-" + path,
+              agentName: "Project Builder",
+              path,
+              action: "create" as const,
+              status: "written" as const,
+              updatedAt: new Date().toISOString(),
+            })),
+            {
+              id: "file-" + Date.now() + "-IMPLEMENTATION.md",
+              agentName: "Project Builder",
+              path: "IMPLEMENTATION.md",
+              action: "plan" as const,
+              status: "written" as const,
+              updatedAt: new Date().toISOString(),
+            },
+            {
+              id: "file-" + Date.now() + "-docs/agent-tasks.md",
+              agentName: "Project Builder",
+              path: "docs/agent-tasks.md",
+              action: "plan" as const,
+              status: "written" as const,
+              updatedAt: new Date().toISOString(),
+            },
+          ],
+          projectWorkTimers,
           projects,
           session,
           sessions,
@@ -1740,7 +2565,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const session = withSystemMessage(state.session, text);
         const sessions = replaceSession(state.sessions, session);
         persistSessions(sessions);
-        return { busy: false, activeRunMode: undefined, session, sessions };
+        return { busy: false, activeRunMode: undefined, activeWorkStartedAt: undefined, session, sessions };
       });
     }
   },

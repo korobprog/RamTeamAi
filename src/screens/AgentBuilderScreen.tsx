@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { SectionTitle, Chip } from "../components/FRamTeamAie";
-import { RoleBadge, roleLabel } from "../components/RoleBadge";
+import { RoleBadge } from "../components/RoleBadge";
+import { roleLabel } from "../lib/roles";
 import { useAppStore } from "../store/appStore";
 import type { AgentConfig, AgentRole, ProviderConfig, ToolKind } from "../types";
 

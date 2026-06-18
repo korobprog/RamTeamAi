@@ -15,10 +15,21 @@ import { useAppStore } from "./store/appStore";
 export default function App() {
   const screen = useAppStore((state) => state.screen);
   const hydrateAccount = useAppStore((state) => state.hydrateAccount);
+  const refreshProviderMonitoring = useAppStore((state) => state.refreshProviderMonitoring);
+  const healthSupervisorEnabled = useAppStore((state) => state.appSettings.healthSupervisorEnabled);
+  const providerHealthIntervalSec = useAppStore((state) => state.appSettings.providerHealthIntervalSec);
 
   useEffect(() => {
     void hydrateAccount();
   }, [hydrateAccount]);
+
+  useEffect(() => {
+    if (!healthSupervisorEnabled) return;
+    refreshProviderMonitoring();
+    const intervalMs = Math.max(15, providerHealthIntervalSec || 60) * 1000;
+    const timer = window.setInterval(() => refreshProviderMonitoring(), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [healthSupervisorEnabled, providerHealthIntervalSec, refreshProviderMonitoring]);
 
   return (
     <FRamTeamAie>

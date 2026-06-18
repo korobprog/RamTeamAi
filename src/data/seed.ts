@@ -61,7 +61,7 @@ export const providersSeed: ProviderConfig[] = [
     auth: "none",
     stream: "jsonl",
     maskedKey: "ключ не нужен",
-    status: "connected",
+    status: "warning",
     capabilities: ctxLocal,
     models: [
       { id: "llama3.1", label: "Llama 3.1", capabilities: ctxLocal },
@@ -177,6 +177,10 @@ export const planArtifactSeed: PlanArtifact = {
 };
 
 export const mcpServersSeed: McpServerConfig[] = [
-  { id: "web-search", name: "Web search MCP", transport: "http", commandOrUrl: "http://localhost:3000/mcp", enabled: false, tools: [], status: "not-configured" },
-  { id: "filesystem", name: "Filesystem sandbox", transport: "stdio", commandOrUrl: "npx -y @modelcontextprotocol/server-filesystem .", enabled: false, tools: [], status: "not-configured" },
+  { id: "context7", name: "Context7 Docs MCP", transport: "http", commandOrUrl: "https://mcp.context7.com/mcp", enabled: false, tools: [], status: "not-configured" },
+  { id: "web-search", name: "Web fetch MCP", transport: "stdio", commandOrUrl: "npx -y mcp-fetch-server", enabled: false, tools: [], status: "not-configured" },
+  { id: "filesystem", name: "Filesystem sandbox", transport: "stdio", commandOrUrl: "npx -y @modelcontextprotocol/server-filesystem@2025.12.18 .", enabled: false, tools: [], status: "not-configured" },
+  { id: "memory", name: "Memory knowledge graph", transport: "stdio", commandOrUrl: "npx -y @modelcontextprotocol/server-memory", enabled: false, tools: [], status: "not-configured" },
+  { id: "sequential-thinking", name: "Sequential Thinking", transport: "stdio", commandOrUrl: "npx -y @modelcontextprotocol/server-sequential-thinking", enabled: false, tools: [], status: "not-configured" },
+  { id: "playwright", name: "Playwright browser", transport: "stdio", commandOrUrl: "npx -y @playwright/mcp@latest", enabled: false, tools: [], status: "not-configured" },
 ];

@@ -144,7 +144,7 @@ pub fn default_providers() -> Vec<ProviderConfig> {
             base_url: "http://localhost:11434/api".into(),
             auth: "none".into(),
             stream: "jsonl".into(),
-            status: "connected".into(),
+            status: "warning".into(),
             key_ref: None,
             masked_key: Some("no key needed".into()),
             capabilities: ctx_local.clone(),
@@ -227,7 +227,7 @@ fn endpoint(provider: &ProviderConfig, model: &str, api_key: Option<&str>) -> St
     }
 }
 
-fn RamTeamAi_requires_stream(provider: &ProviderConfig, format: &str) -> bool {
+fn ram_team_ai_requires_stream(provider: &ProviderConfig, format: &str) -> bool {
     provider.kind == "RamTeamAi" && matches!(format, "anthropic" | "responses")
 }
 
@@ -263,7 +263,7 @@ fn completion_body(
     messages: &[crate::core::orchestrator::ChatMessage],
 ) -> Value {
     let format = api_format(provider, &agent.model_id);
-    let stream = RamTeamAi_requires_stream(provider, &format);
+    let stream = ram_team_ai_requires_stream(provider, &format);
     match format.as_str() {
         "anthropic" => json!({
             "model": agent.model_id,
@@ -400,7 +400,7 @@ pub async fn complete_chat(
     let client = reqwest::Client::new();
     let format = api_format(provider, &agent.model_id);
     let mut request = client.post(endpoint(provider, &agent.model_id, api_key.as_deref())).json(&completion_body(provider, agent, messages));
-    if RamTeamAi_requires_stream(provider, &format) {
+    if ram_team_ai_requires_stream(provider, &format) {
         request = request.header("accept", "text/event-stream");
     }
 
@@ -422,7 +422,7 @@ pub async fn complete_chat(
         return Err(ProviderError::BadStatus { status: status.as_u16(), body: raw.chars().take(600).collect() });
     }
 
-    let text = if RamTeamAi_requires_stream(provider, &format) || raw.lines().any(|line| line.trim_start().starts_with("data:")) {
+    let text = if ram_team_ai_requires_stream(provider, &format) || raw.lines().any(|line| line.trim_start().starts_with("data:")) {
         extract_sse_text(provider, &agent.model_id, &raw).ok_or(ProviderError::MissingResponseText)?
     } else {
         let value: Value = serde_json::from_str(&raw)?;

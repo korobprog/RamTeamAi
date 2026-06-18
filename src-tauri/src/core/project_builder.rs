@@ -64,6 +64,21 @@ pub struct WorkspaceWriteResult {
     pub overwritten: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceReadResult {
+    pub path: String,
+    pub content: String,
+    pub exists: bool,
+}
+
+// Directories that never carry useful project source for the agents, so we keep
+// them out of the snapshot to save context tokens and time.
+const SNAPSHOT_SKIP_DIRS: [&str; 6] = [".git", "node_modules", "target", "dist", "build", ".next"];
+// Cap so a large repo can never blow up the model context.
+const SNAPSHOT_MAX_FILES: usize = 200;
+const SNAPSHOT_MAX_FILE_BYTES: u64 = 256 * 1024;
+
 pub fn build_project(
     artifact: &PlanArtifact,
     confirmed: bool,
@@ -108,6 +123,19 @@ pub fn build_project(
     fs::write(root.join("IMPLEMENTATION.md"), render_implementation_plan(artifact))?;
     if !files.iter().any(|file| file == "IMPLEMENTATION.md") {
         files.push("IMPLEMENTATION.md".into());
+    }
+
+    if requires_tauri_react_scaffold(artifact) {
+        let mut scaffold_created_files = Vec::new();
+        for (relative_path, content) in tauri_react_scaffold_files(artifact) {
+            write_if_missing(
+                &root,
+                relative_path,
+                &content,
+                &mut files,
+                &mut scaffold_created_files,
+            )?;
+        }
     }
 
     Ok(BuildResult {
@@ -188,6 +216,95 @@ pub fn write_workspace_file(
     })
 }
 
+pub fn read_workspace_file(
+    root_path: &Path,
+    relative_path: &str,
+) -> Result<WorkspaceReadResult, ProjectBuilderError> {
+    if root_path.as_os_str().is_empty() {
+        return Err(ProjectBuilderError::EmptyWorkspacePath);
+    }
+
+    let relative = safe_relative_path(relative_path)?;
+    let path = root_path.join(&relative);
+    let normalized = relative.display().to_string().replace('\\', "/");
+
+    if !path.is_file() {
+        return Ok(WorkspaceReadResult {
+            path: normalized,
+            content: String::new(),
+            exists: false,
+        });
+    }
+
+    let content = fs::read_to_string(&path)?;
+    Ok(WorkspaceReadResult {
+        path: normalized,
+        content,
+        exists: true,
+    })
+}
+
+pub fn list_workspace_files(root_path: &Path) -> Result<Vec<String>, ProjectBuilderError> {
+    if root_path.as_os_str().is_empty() {
+        return Err(ProjectBuilderError::EmptyWorkspacePath);
+    }
+    if !root_path.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    collect_workspace_files(root_path, root_path, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_workspace_files(
+    root: &Path,
+    dir: &Path,
+    files: &mut Vec<String>,
+) -> Result<(), ProjectBuilderError> {
+    if files.len() >= SNAPSHOT_MAX_FILES {
+        return Ok(());
+    }
+
+    let mut entries: Vec<_> = fs::read_dir(dir)?.filter_map(Result::ok).collect();
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        if files.len() >= SNAPSHOT_MAX_FILES {
+            break;
+        }
+
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        if file_type.is_dir() {
+            if SNAPSHOT_SKIP_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            collect_workspace_files(root, &path, files)?;
+            continue;
+        }
+
+        if !file_type.is_file() {
+            continue;
+        }
+        if name == ".gitkeep" {
+            continue;
+        }
+        if entry.metadata().map(|meta| meta.len()).unwrap_or(0) > SNAPSHOT_MAX_FILE_BYTES {
+            continue;
+        }
+
+        if let Ok(relative) = path.strip_prefix(root) {
+            files.push(relative.display().to_string().replace('\\', "/"));
+        }
+    }
+
+    Ok(())
+}
+
 fn safe_relative_path(value: &str) -> Result<PathBuf, ProjectBuilderError> {
     let path = Path::new(value.trim());
     if path.as_os_str().is_empty() {
@@ -250,6 +367,83 @@ fn render_plan(artifact: &PlanArtifact) -> String {
     )
 }
 
+
+fn requires_tauri_react_scaffold(artifact: &PlanArtifact) -> bool {
+    let source = format!(
+        "{}\n{}\n{}\n{}",
+        artifact.title,
+        artifact.stack.join("\n"),
+        artifact.steps.join("\n"),
+        artifact.project_tree
+    )
+    .to_lowercase();
+    (source.contains("tauri") || source.contains("src-tauri"))
+        && (source.contains("react") || source.contains("main.tsx") || source.contains("app.tsx"))
+}
+
+fn tauri_react_scaffold_files(artifact: &PlanArtifact) -> Vec<(&'static str, String)> {
+    let package_name = safe_package_name(&artifact.title);
+    let app_title = artifact.title.replace('"', "'");
+    vec![
+        (
+            "package.json",
+            format!(
+                "{{\n  \"name\": \"{package_name}\",\n  \"private\": true,\n  \"version\": \"0.1.0\",\n  \"type\": \"module\",\n  \"scripts\": {{\n    \"dev\": \"vite\",\n    \"build\": \"tsc && vite build\",\n    \"preview\": \"vite preview\",\n    \"tauri\": \"tauri\"\n  }},\n  \"dependencies\": {{\n    \"@tauri-apps/api\": \"latest\",\n    \"react\": \"latest\",\n    \"react-dom\": \"latest\"\n  }},\n  \"devDependencies\": {{\n    \"@tauri-apps/cli\": \"latest\",\n    \"@types/react\": \"latest\",\n    \"@types/react-dom\": \"latest\",\n    \"@vitejs/plugin-react\": \"latest\",\n    \"typescript\": \"latest\",\n    \"vite\": \"latest\"\n  }}\n}}\n"
+            ),
+        ),
+        (
+            "tsconfig.json",
+            "{\n  \"compilerOptions\": {\n    \"target\": \"ES2020\",\n    \"useDefineForClassFields\": true,\n    \"lib\": [\"ES2020\", \"DOM\", \"DOM.Iterable\"],\n    \"allowJs\": false,\n    \"skipLibCheck\": true,\n    \"esModuleInterop\": true,\n    \"allowSyntheticDefaultImports\": true,\n    \"strict\": true,\n    \"forceConsistentCasingInFileNames\": true,\n    \"module\": \"ESNext\",\n    \"moduleResolution\": \"Bundler\",\n    \"resolveJsonModule\": true,\n    \"isolatedModules\": true,\n    \"noEmit\": true,\n    \"jsx\": \"react-jsx\"\n  },\n  \"include\": [\"src\"],\n  \"references\": [{ \"path\": \"./tsconfig.node.json\" }]\n}\n".into(),
+        ),
+        (
+            "tsconfig.node.json",
+            "{\n  \"compilerOptions\": {\n    \"composite\": true,\n    \"module\": \"ESNext\",\n    \"moduleResolution\": \"Bundler\",\n    \"allowSyntheticDefaultImports\": true\n  },\n  \"include\": [\"vite.config.ts\"]\n}\n".into(),
+        ),
+        (
+            "vite.config.ts",
+            "import { defineConfig } from \"vite\";\nimport react from \"@vitejs/plugin-react\";\n\nexport default defineConfig({\n  plugins: [react()],\n  server: { strictPort: true },\n});\n".into(),
+        ),
+        (
+            "index.html",
+            "<div id=\"root\"></div>\n<script type=\"module\" src=\"/src/main.tsx\"></script>\n".into(),
+        ),
+        (
+            "src/main.tsx",
+            "import React from \"react\";\nimport ReactDOM from \"react-dom/client\";\nimport App from \"./App\";\nimport \"./styles.css\";\n\nReactDOM.createRoot(document.getElementById(\"root\") as HTMLElement).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>,\n);\n".into(),
+        ),
+        (
+            "src/App.tsx",
+            format!(
+                "export default function App() {{\n  return (\n    <main className=\"app-shell\">\n      <h1>{app_title}</h1>\n      <p>This Tauri + React scaffold is ready for the agent team to extend.</p>\n    </main>\n  );\n}}\n"
+            ),
+        ),
+        (
+            "src/styles.css",
+            ":root { font-family: Inter, system-ui, sans-serif; color: #1f2937; background: #f8fafc; }\nbody { margin: 0; }\n.app-shell { min-height: 100vh; display: grid; place-content: center; gap: 12px; padding: 48px; text-align: center; }\n.app-shell h1 { margin: 0; font-size: clamp(32px, 6vw, 64px); }\n.app-shell p { margin: 0; color: #64748b; }\n".into(),
+        ),
+        (
+            "src-tauri/Cargo.toml",
+            format!(
+                "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[build-dependencies]\ntauri-build = {{ version = \"2\", features = [] }}\n\n[dependencies]\ntauri = {{ version = \"2\", features = [] }}\ntauri-plugin-opener = \"2\"\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
+            ),
+        ),
+        (
+            "src-tauri/tauri.conf.json",
+            format!(
+                "{{\n  \"productName\": \"{app_title}\",\n  \"version\": \"0.1.0\",\n  \"identifier\": \"com.ramteamai.generated\",\n  \"build\": {{\n    \"beforeDevCommand\": \"npm run dev\",\n    \"beforeBuildCommand\": \"npm run build\",\n    \"devUrl\": \"http://localhost:1420\",\n    \"frontendDist\": \"../dist\"\n  }},\n  \"app\": {{\n    \"windows\": [{{ \"title\": \"{app_title}\", \"width\": 1100, \"height\": 720 }}],\n    \"security\": {{ \"csp\": null }}\n  }},\n  \"bundle\": {{ \"active\": true, \"targets\": \"all\" }}\n}}\n"
+            ),
+        ),
+        (
+            "src-tauri/build.rs",
+            "fn main() {\n    tauri_build::build()\n}\n".into(),
+        ),
+        (
+            "src-tauri/src/main.rs",
+            "#![cfg_attr(not(debug_assertions), windows_subsystem = \"windows\")]\n\nfn main() {\n    tauri::Builder::default()\n        .plugin(tauri_plugin_opener::init())\n        .run(tauri::generate_context!())\n        .expect(\"error while running tauri application\");\n}\n".into(),
+        ),
+    ]
+}
+
 fn render_implementation_plan(artifact: &PlanArtifact) -> String {
     format!(
         "# Implementation\n\nПроект: {}\n\n## Правило\n- Не обсуждать по кругу: каждый раунд должен давать конкретные изменения файлов или проверяемый блок кода.\n- Если агент не может записать файл сам, он обязан вернуть точный путь, действие и код/diff.\n\n## Следующие шаги\n{}\n\n## Проверки\n- [ ] Запустить доступную сборку/линт/тесты.\n- [ ] Проверить изменённые файлы в выбранной рабочей папке.\n",
@@ -273,6 +467,15 @@ fn plan_template(created_at: &str) -> String {
     format!(
         "# Plan\n\nПлан проекта для RamTeamAi.\n\n## Цель\n- \n\n## Задачи\n- [ ] Описать задачу\n- [ ] Собрать контекст\n- [ ] Реализовать решение\n- [ ] Проверить результат\n\n## Следующий шаг\n- \n\n---\nСоздано: {created_at}\n"
     )
+}
+
+fn safe_package_name(value: &str) -> String {
+    let slug = slugify(value);
+    if slug.is_empty() {
+        "ramteamai-project".into()
+    } else {
+        slug.chars().take(48).collect()
+    }
 }
 
 fn slugify(value: &str) -> String {
