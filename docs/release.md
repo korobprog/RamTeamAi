@@ -58,7 +58,7 @@ src-tauri/target/release/bundle/
 The app is configured to check updates from:
 
 ```text
-https://github.com/korobprog/RamTeamAi_app/releases/latest/download/latest.json
+https://github.com/korobprog/RamTeamAi/releases/latest/download/latest.json
 ```
 
 Tauri uses this file to decide whether a newer version is available.

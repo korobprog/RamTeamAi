@@ -1,4 +1,4 @@
-﻿# RamTeamAi
+# RamTeamAi
 
 RamTeamAi — настольный AI-клиент на **Tauri 2 + React + TypeScript** для подключения разных AI API, сборки команды агентов, multi-agent планирования и безопасной подготовки файлов проекта перед записью на диск.
 
@@ -44,6 +44,7 @@ RamTeamAi — настольный AI-клиент на **Tauri 2 + React + Type
 
 | Версия | Дата | Что сделано | Артефакты |
 | --- | --- | --- | --- |
+| `0.1.2` | 2026-06-18 | ????????? endpoint ??????????????; ???????? ??????????? updater artifacts (`latest.json` ? `.sig`) ??? Tauri updater. | Windows: [AppSetup.exe](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.2/AppSetup.exe) / [NSIS installer](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.2/RamTeamAi_0.1.2_x64-setup.exe); macOS: [DMG](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.2/RamTeamAi_0.1.2_universal.dmg); updater: [latest.json](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.2/latest.json) |
 | `0.1.1` | 2026-06-18 | Обновлена desktop-сборка и опубликован релиз для Windows и macOS. | Windows: [AppSetup.exe](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.1/AppSetup.exe) / [NSIS installer](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.1/RamTeamAi_0.1.1_x64-setup.exe); macOS: [DMG](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.1/RamTeamAi_0.1.1_universal.dmg) |
 | `0.1.0` | 2026-06-17 | Подготовлена desktop-сборка для Windows и macOS; добавлен Tauri updater; обновление запускается только после подтверждения пользователя; зафиксирован процесс релиза без Apple Developer ID/notarization. | Windows: [AppSetup.exe](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.0/AppSetup.exe) / [NSIS installer](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.0/RamTeamAi_0.1.0_x64-setup.exe); macOS: [DMG](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.0/RamTeamAi_0.1.0_universal.dmg) |
 
