@@ -5,6 +5,7 @@ import { safeInvoke } from "../lib/tauri";
 import { callMcpTool as callMcpToolRequest, formatMcpToolsForPrompt, testMcpConnection } from "../mcp/manager";
 import { applyTheme } from "../lib/theme";
 import { synthesizePlan } from "../orchestrator";
+import { artifactStatusAfterImplementationRound, buildAutoImplementationSummary, decideAutoRound, nextStalledRounds, projectStatusAfterImplementationRound, type AutoStopReason } from "../orchestrator/autoLoop";
 import { extractWorkspaceFileBlocks } from "../orchestrator/fileBlocks";
 import {
   DEFAULT_AGENT_LEASE_TIMEOUT_SEC,
@@ -19,13 +20,14 @@ import {
   recoverCheckpoint,
   selectRecoveryAgent,
 } from "../orchestrator/healthSupervisor";
-import { selectImplementationAgents } from "../orchestrator/agentSelection";
+import { selectRunAgents } from "../orchestrator/agentSelection";
+import { buildChecklist, checklistComplete, checklistMatchesSteps, checklistProgress, heuristicChecklist, mergeChecklist, parseChecklistVerdict, pendingImplementationSteps, renderVerificationPrompt, type ChecklistItem } from "../orchestrator/checklist";
 import { completeWithProvider, maskSecret, rememberProviderSecret, testProviderConnection } from "../providers";
 import type { CompletionResult, ProviderTestResult } from "../providers";
 import { buildProject, planImplementationAssignments, renderImplementationPlan, SCAFFOLD_APP_STUB_MARKER, validateProjectCompleteness } from "../projectBuilder";
 import { beginGithubDeviceFlow, disconnectGithub, isGithubConfigured, loadGithubProfile, pollGithubDeviceFlow } from "../integrations/github";
 import { describeFirebaseAuthError, isFirebaseConfigured, loadCloudSettings, loadFirebaseUid, saveCloudSettings, signInFirebaseWithGithubToken, signOutFirebase } from "../integrations/firebase";
-import type { AgentConfig, AgentDialogMessage, AgentRunCheckpoint, AgentRunMode, AppSettings, BuildResult, ChatMessage, CloudSettingsSnapshot, GithubTokenPollResult, ImplementationAssignment, LiveFileActivity, McpServerConfig, McpServerTestResult, McpToolCallResult, MessageAction, PlanArtifact, ProjectConfig, ProjectGitLink, ProviderConfig, ProviderMonitoringConfig, QueuedAgentQuestion, ScreenId, SessionConfig, TopologyConfig, UserAccountState, WorkspaceInitResult } from "../types";
+import type { AgentConfig, AgentDialogMessage, AgentRunCheckpoint, AgentRunMode, AppSettings, BuildResult, ChatMessage, CloudSettingsSnapshot, GithubTokenPollResult, ImplementationAssignment, LiveFileActivity, McpServerConfig, McpServerTestResult, McpToolCallResult, MessageAction, PlanArtifact, ProjectConfig, ProjectGitLink, ProviderConfig, ProviderMonitoringConfig, ProjectReadinessStatus, QueuedAgentQuestion, ScreenId, SessionConfig, TopologyConfig, UserAccountState, WorkspaceInitResult } from "../types";
 import { clearStoredWebWorkspaceFolder, initWorkspaceFiles, listWorkspaceFiles, pickWorkspaceFolder, readWorkspaceTextFile, writeWorkspaceTextFile } from "../workspace";
 
 const PROVIDERS_STORAGE_KEY = "RamTeamAi.providers.v2";
@@ -52,7 +54,7 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   providerHealthIntervalSec: DEFAULT_PROVIDER_HEALTH_INTERVAL_SEC,
   agentLeaseTimeoutSec: DEFAULT_AGENT_LEASE_TIMEOUT_SEC,
   autoMode: false,
-  autoMaxRounds: 4,
+  autoMaxRounds: 12,
   operatorAssistantEnabled: true,
   operatorDefaultAgentId: "architect",
   operatorAssistantProviderId: "RamTeamAi",
@@ -90,13 +92,16 @@ function buildAgentRoundDirective(
   alreadyWritten: string[],
 ): string {
   const lines = [
-    `Координация раунда. Твоя роль: ${agent.role}. ${assignment?.summary ?? "Берёшь следующий конкретный шаг плана."}`,
+    `Координация раунда реализации. Твоя роль: ${agent.role}, но сейчас результатом считаются только реальные изменения файлов.`,
   ];
   if (ownedSteps.length) {
-    lines.push("Твои шаги в этом раунде (не бери чужие): " + ownedSteps.map((step) => `«${step}»`).join("; ") + ".");
+    lines.push("Твои незакрытые шаги в этом раунде (не бери чужие): " + ownedSteps.map((step) => `«${step}»`).join("; ") + ".");
   } else if (assignment?.deliverables.length) {
-    lines.push("Твои результаты: " + assignment.deliverables.join("; ") + ".");
+    lines.push("Если явных незакрытых шагов для тебя нет, не пиши обзор: выбери ближайший недоделанный исходный файл из снимка и верни полный блок `Файл: путь` + код.");
+  } else {
+    lines.push("Нет отдельной зоны — помоги дописать ближайший недоделанный исходный файл и верни полный блок `Файл: путь` + код.");
   }
+  if (assignment?.summary) lines.push("Контекст роли: " + assignment.summary);
   if (alreadyWritten.length) {
     lines.push(
       "В этом раунде другие агенты уже записали файлы: " + alreadyWritten.join(", ") + ".",
@@ -105,6 +110,11 @@ function buildAgentRoundDirective(
   }
   return lines.join("\n");
 }
+
+// Safety ceiling for autonomous implementation rounds. User settings can lower
+// the limit, but cannot exceed this cap and burn tokens forever if a model is
+// permanently stuck.
+const AUTO_IMPLEMENTATION_HARD_CAP = 12;
 
 // Budget for the workspace snapshot injected into implementation context. Keeps
 // edits grounded in real file content without blowing up the model context.
@@ -188,6 +198,31 @@ async function buildWorkspaceSnapshot(rootPath: string): Promise<string | undefi
     "",
     sections.join("\n\n"),
   ].filter(Boolean).join("\n");
+}
+
+async function buildChecklistEvidenceContents(rootPath: string, files: string[]): Promise<Record<string, string>> {
+  const interesting = files
+    .map(normalizeWorkspacePath)
+    .filter((path) =>
+      path === "package.json" ||
+      path === "components.json" ||
+      path === "tsconfig.json" ||
+      /^vite\.config\.[cm]?[jt]s$/.test(path) ||
+      /^tailwind\.config\.[cm]?[jt]s$/.test(path) ||
+      /^postcss\.config\.[cm]?[jt]s$/.test(path) ||
+      /^src\/.+\.(tsx?|jsx?|css|html)$/.test(path),
+    )
+    .slice(0, 60);
+  const contents: Record<string, string> = {};
+  for (const path of interesting) {
+    try {
+      const file = await readWorkspaceTextFile(rootPath, path);
+      if (file.exists) contents[path] = file.content.slice(0, 20_000);
+    } catch {
+      // Evidence is best-effort: missing reads should not abort the run.
+    }
+  }
+  return contents;
 }
 
 function ensureProviderMonitoring(provider: ProviderConfig, saved?: ProviderMonitoringConfig): ProviderMonitoringConfig {
@@ -405,9 +440,21 @@ function persistActiveIds(projectId: string, sessionId: string): void {
 }
 
 function normalizeAppSettings(settings?: Partial<AppSettings>): AppSettings {
+  const legacyDefaultAutoMaxRounds = 4;
+  const legacyDefaultLeaseTimeoutSec = 90;
+  const rawAutoMaxRounds = Number(settings?.autoMaxRounds);
+  const rawLeaseTimeoutSec = Number(settings?.agentLeaseTimeoutSec);
+  const autoMaxRounds = !Number.isFinite(rawAutoMaxRounds) || rawAutoMaxRounds <= 0 || rawAutoMaxRounds === legacyDefaultAutoMaxRounds
+    ? DEFAULT_APP_SETTINGS.autoMaxRounds
+    : Math.min(AUTO_IMPLEMENTATION_HARD_CAP, Math.max(1, rawAutoMaxRounds));
+  const agentLeaseTimeoutSec = !Number.isFinite(rawLeaseTimeoutSec) || rawLeaseTimeoutSec <= 0 || rawLeaseTimeoutSec === legacyDefaultLeaseTimeoutSec
+    ? DEFAULT_APP_SETTINGS.agentLeaseTimeoutSec
+    : Math.max(15, rawLeaseTimeoutSec);
   return {
     ...DEFAULT_APP_SETTINGS,
     ...settings,
+    autoMaxRounds,
+    agentLeaseTimeoutSec,
   };
 }
 
@@ -897,6 +944,7 @@ interface AppState {
   lastWorkspaceInit?: WorkspaceInitResult;
   activeRunMode?: AgentRunMode;
   lastRunFilesWritten?: number;
+  implementationChecklist: ChecklistItem[];
   liveFileActivity: LiveFileActivity[];
   queuedAgentQuestions: QueuedAgentQuestion[];
   agentDialogMessages: AgentDialogMessage[];
@@ -955,6 +1003,8 @@ interface AppState {
   requestBuild: (confirmed: boolean) => Promise<void>;
   implementProject: () => Promise<void>;
   startAgentImplementation: () => Promise<void>;
+  continueAutoImplementation: () => Promise<void>;
+  verifyImplementationChecklist: () => Promise<ChecklistItem[]>;
 }
 
 const initialProjects = loadProjects(projectsSeed);
@@ -986,6 +1036,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   workspacePath: loadWorkspacePath(),
   activeRunMode: undefined,
   lastRunFilesWritten: undefined,
+  implementationChecklist: [],
   liveFileActivity: [],
   queuedAgentQuestions: [],
   agentDialogMessages: [],
@@ -1445,6 +1496,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProjectId: project.id,
       activeSessionId: session.id,
       session,
+      artifact: planArtifactSeed,
+      implementationChecklist: [],
+      lastBuild: undefined,
+      lastRunFilesWritten: undefined,
       screen: "chat",
     };
   }),
@@ -1465,6 +1520,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProjectId: project.id,
       activeSessionId: guardedSession.id,
       session: guardedSession,
+      artifact: planArtifactSeed,
+      implementationChecklist: [],
+      lastBuild: undefined,
+      lastRunFilesWritten: undefined,
       screen: "chat",
     });
   },
@@ -1482,6 +1541,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProjectId: targetProjectId,
       activeSessionId: session.id,
       session,
+      artifact: planArtifactSeed,
+      implementationChecklist: [],
+      lastBuild: undefined,
+      lastRunFilesWritten: undefined,
       screen: "chat",
     };
   }),
@@ -1692,13 +1755,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     const visiblePrompt = addressedAgent ? `@${addressedAgent.name}: ${trimmedPrompt}` : trimmedPrompt;
     const derivedTitle = trimmedPrompt ? titleFromPrompt(trimmedPrompt) : session.title;
     const targetAgent = addressedAgent;
-    const activeAgents = targetAgent
-      ? [targetAgent]
-      : topology.kind === "pipeline"
-      ? agents
-      : mode === "implementation"
-        ? selectImplementationAgents(agents, 3)
-        : agents.slice(0, Math.min(agents.length, 3));
+    const checklistForRound = mode === "implementation"
+      ? checklistMatchesSteps(get().artifact.steps, get().implementationChecklist)
+        ? get().implementationChecklist
+        : buildChecklist(get().artifact.steps)
+      : [];
+    const stepsForRound = mode === "implementation"
+      ? pendingImplementationSteps(get().artifact.steps, checklistForRound)
+      : [];
+    const implementationAgentLimit = Math.max(1, Math.min(3, stepsForRound.length || 1));
+    const activeAgents = selectRunAgents(agents, {
+      mode,
+      topologyKind: topology.kind,
+      targetAgent,
+      implementationLimit: implementationAgentLimit,
+      planningLimit: 3,
+    });
 
     const userMessage: ChatMessage | undefined = trimmedPrompt
       ? {
@@ -1779,7 +1851,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Distribute plan steps and track files written so each agent works its own
     // slice instead of colliding on the same files within the round.
     const roundAssignments = mode === "implementation" ? planImplementationAssignments(get().artifact, activeAgents) : [];
-    const stepBuckets = mode === "implementation" ? partitionStepsAcrossAgents(get().artifact.steps, activeAgents) : new Map<string, string[]>();
+    const stepBuckets = mode === "implementation" ? partitionStepsAcrossAgents(stepsForRound, activeAgents) : new Map<string, string[]>();
     const writtenThisRound = new Set<string>();
     for (const agent of activeAgents) {
       set((state) => ({
@@ -2121,8 +2193,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       const stubFiles = await detectScaffoldStubFiles(implementationRootPath, workspaceFiles);
       finalReadiness = validateProjectCompleteness(get().artifact, workspaceFiles, undefined, stubFiles);
     }
-    const implementationComplete = !finalReadiness || !["partial", "failed"].includes(finalReadiness.status);
-
     set((state) => {
       const nextMessages = [...baseMessages, ...messages];
       const finishedAt = Date.now();
@@ -2139,8 +2209,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         tokensUsed: nextMessages.reduce((sum, message) => sum + message.tokens, 0),
       };
       const sessions = replaceSession(state.sessions, session);
+      const plannedArtifact = mode === "planning" ? synthesizePlan(nextMessages, state.artifact) : undefined;
+      const readinessStatus = finalReadiness?.status;
       const projects = mode === "implementation"
-        ? state.projects.map((project) => project.id === activeProjectId ? { ...project, status: implementationComplete ? "built" as const : "active" as const, updatedAt: new Date().toISOString() } : project)
+        ? state.projects.map((project) => project.id === activeProjectId ? { ...project, status: projectStatusAfterImplementationRound(readinessStatus), updatedAt: new Date().toISOString() } : project)
         : state.projects;
       persistSessions(sessions);
       if (mode === "implementation") persistProjects(projects);
@@ -2150,16 +2222,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeRunMode: undefined,
         activeWorkStartedAt: undefined,
         projectWorkTimers,
-        lastRunFilesWritten: mode === "implementation" ? totalFilesWritten : state.lastRunFilesWritten,
+        lastRunFilesWritten: mode === "planning" ? undefined : mode === "implementation" ? totalFilesWritten : state.lastRunFilesWritten,
+        implementationChecklist: mode === "planning" ? [] : state.implementationChecklist,
         lastBuild: finalReadiness && state.lastBuild ? { ...state.lastBuild, readiness: finalReadiness } : state.lastBuild,
         agents: state.agents.map((agent) => ({ ...agent, status: "done" })),
         projects,
         session,
         sessions,
-        artifact: mode === "planning"
-          ? synthesizePlan(nextMessages, state.artifact)
+        artifact: plannedArtifact
+          ? plannedArtifact
           : mode === "implementation"
-            ? { ...state.artifact, status: implementationComplete ? "built" as const : "scaffolded" as const }
+            ? { ...state.artifact, status: artifactStatusAfterImplementationRound(readinessStatus) }
             : state.artifact,
       };
     });
@@ -2180,6 +2253,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Need a concrete plan before the team can implement anything.
     if (!get().artifact.steps.length) return;
 
+    // Seed the checklist from the plan so the UI shows pending items immediately.
+    const initialChecklist = buildChecklist(get().artifact.steps);
+    set({ implementationChecklist: initialChecklist });
+
     set({ autoRunning: true });
     try {
       // 2. Scaffold the project and run the first implementation round. This may
@@ -2187,29 +2264,80 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().startAgentImplementation();
       if (!get().appSettings.autoMode) return;
 
-      // 3. Keep running implementation rounds until the project actually
-      // satisfies its completeness contract — not just until tokens run out.
-      const maxRounds = Math.max(1, get().appSettings.autoMaxRounds || 1);
-      // Tolerate a single stalled round (e.g. a model that answered with prose
-      // instead of file blocks); only give up after two empties in a row so one
-      // weak answer no longer aborts the whole build.
-      let stalledRounds = get().lastRunFilesWritten ? 0 : 1;
-      for (let round = 1; round < maxRounds; round += 1) {
-        if (!get().appSettings.autoMode) break;
-        if (get().busy) break;
-        // Real exit: the build is complete, so further rounds add nothing.
-        if (get().artifact.status === "built") break;
-        // Genuinely stuck: two consecutive rounds wrote nothing.
-        if (stalledRounds >= 2) break;
-        await get().runTeam(IMPLEMENTATION_ROUND_PROMPT, "implementation");
-        stalledRounds = get().lastRunFilesWritten ? 0 : stalledRounds + 1;
-      }
+      // 3. Verify and continue implementation rounds automatically until the
+      // checklist is complete, stalled, or the configured cap is reached.
+      await get().continueAutoImplementation();
     } finally {
       set({ autoRunning: false });
       const nextQueuedQuestion = get().queuedAgentQuestions[0];
       if (nextQueuedQuestion && !get().busy) {
         set((state) => ({ queuedAgentQuestions: state.queuedAgentQuestions.filter((item) => item.id !== nextQueuedQuestion.id) }));
         await get().runAgentDialogQuestion(nextQueuedQuestion.text, nextQueuedQuestion.targetAgentId, false);
+      }
+    }
+  },
+  continueAutoImplementation: async () => {
+    const ownsAutoRunning = !get().autoRunning;
+    if (ownsAutoRunning) set({ autoRunning: true });
+
+    try {
+      const requestedRounds = get().appSettings.autoMaxRounds || DEFAULT_APP_SETTINGS.autoMaxRounds;
+      const cap = Math.max(1, Math.min(requestedRounds, AUTO_IMPLEMENTATION_HARD_CAP));
+      const initialChecklist = checklistMatchesSteps(get().artifact.steps, get().implementationChecklist)
+        ? get().implementationChecklist
+        : buildChecklist(get().artifact.steps);
+      if (!checklistMatchesSteps(get().artifact.steps, get().implementationChecklist)) {
+        set({ implementationChecklist: initialChecklist });
+      }
+
+      let checklist = await get().verifyImplementationChecklist();
+      let stalledRounds = nextStalledRounds(initialChecklist, checklist, get().lastRunFilesWritten, 0);
+      let stopReason: AutoStopReason | undefined;
+      for (let round = 1; round < cap; round += 1) {
+        const decision = decideAutoRound({
+          checklist,
+          round,
+          cap,
+          stalledRounds,
+          autoMode: true,
+          busy: get().busy,
+        });
+        if (decision.action === "stop") {
+          stopReason = decision.reason;
+          break;
+        }
+        const previousChecklist = checklist;
+        await get().runTeam(IMPLEMENTATION_ROUND_PROMPT, "implementation");
+        checklist = await get().verifyImplementationChecklist();
+        stalledRounds = nextStalledRounds(previousChecklist, checklist, get().lastRunFilesWritten, stalledRounds);
+      }
+      stopReason ??= checklistComplete(checklist) ? "complete" : "limit";
+
+      const complete = checklistComplete(checklist);
+      const summary = buildAutoImplementationSummary(checklist, stopReason, cap);
+      set((state) => {
+        const session = withSystemMessage(state.session, summary);
+        const sessions = replaceSession(state.sessions, session);
+        persistSessions(sessions);
+        const projects = complete
+          ? state.projects.map((project) => project.id === state.activeProjectId ? { ...project, status: "built" as const, updatedAt: new Date().toISOString() } : project)
+          : state.projects;
+        if (complete) persistProjects(projects);
+        return {
+          session,
+          sessions,
+          projects,
+          artifact: complete ? { ...state.artifact, status: "built" as const } : state.artifact,
+        };
+      });
+    } finally {
+      if (ownsAutoRunning) {
+        set({ autoRunning: false });
+        const nextQueuedQuestion = get().queuedAgentQuestions[0];
+        if (nextQueuedQuestion && !get().busy) {
+          set((state) => ({ queuedAgentQuestions: state.queuedAgentQuestions.filter((item) => item.id !== nextQueuedQuestion.id) }));
+          await get().runAgentDialogQuestion(nextQueuedQuestion.text, nextQueuedQuestion.targetAgentId, false);
+        }
       }
     }
   },
@@ -2268,9 +2396,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       );
       attempts = completion.attempts;
       const notice = fallbackNotice(attempts);
-      if (notice) actions.push({ kind: "fallback", label: "Переключил модель", detail: notice });
-      if (targetAgent.tools.includes("mcp")) actions.push({ kind: "search", label: "Запрос через MCP" });
-      actions.push({ kind: "plan", label: "Ответил в отдельном чате" });
+      if (notice) actions.push({ kind: "fallback", label: "?????????? ??????", detail: notice });
+      if (targetAgent.tools.includes("mcp")) actions.push({ kind: "search", label: "?????? ????? MCP" });
+      actions.push({ kind: "plan", label: "??????? ? ????????? ????" });
       answerText = notice ? notice + "\n\n" + completion.result.text : completion.result.text;
       tokens = Math.max(completion.result.tokens, Math.ceil(answerText.length / 4));
     } catch (error) {
@@ -2286,9 +2414,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           error: summarizeAttemptError(error),
         }));
       }
-      answerText = "Ошибка API: " + (error instanceof Error ? error.message : String(error));
+      answerText = "?????? API: " + (error instanceof Error ? error.message : String(error));
       tokens = Math.max(24, Math.ceil(answerText.length / 4));
-      actions.push({ kind: "error", label: "Ошибка API", detail: summarizeAttemptError(error) });
+      actions.push({ kind: "error", label: "?????? API", detail: summarizeAttemptError(error) });
     }
 
     if (attempts.length) {
@@ -2369,7 +2497,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   })),
   setAgentDialogOpen: (open) => set({ agentDialogOpen: open }),
   clearAgentDialog: () => set({ agentDialogMessages: [], agentDialogOpen: false, agentDialogAgentId: undefined }),
-  updateArtifact: (patch) => set((state) => ({ artifact: { ...state.artifact, ...patch, edited: true } })),
+  updateArtifact: (patch) => set((state) => {
+    const stepsChanged = patch.steps !== undefined;
+    const planChanged = stepsChanged || patch.stack !== undefined;
+    const artifact: PlanArtifact = {
+      ...state.artifact,
+      ...patch,
+      status: patch.status ?? (planChanged ? "draft" : state.artifact.status),
+      edited: true,
+    };
+    return {
+      artifact,
+      implementationChecklist: stepsChanged ? buildChecklist(artifact.steps) : state.implementationChecklist,
+      lastRunFilesWritten: planChanged ? undefined : state.lastRunFilesWritten,
+    };
+  }),
   selectWorkspaceFolder: async () => {
     const selected = await pickWorkspaceFolder(get().workspacePath);
     if (!selected) return undefined;
@@ -2475,6 +2617,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   startAgentImplementation: async () => {
     if (get().busy || !get().activeSessionId) return;
+    if (!checklistMatchesSteps(get().artifact.steps, get().implementationChecklist)) {
+      set({ implementationChecklist: buildChecklist(get().artifact.steps) });
+    }
 
     let { workspacePath } = get();
     if (!workspacePath) {
@@ -2559,6 +2704,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
 
       await get().runTeam(IMPLEMENTATION_ROUND_PROMPT, "implementation");
+      if (!get().autoRunning) {
+        await get().continueAutoImplementation();
+        return;
+      }
     } catch (error) {
       set((state) => {
         const text = "Ошибка запуска реализации: " + (error instanceof Error ? error.message : String(error));
@@ -2568,5 +2717,60 @@ export const useAppStore = create<AppState>((set, get) => ({
         return { busy: false, activeRunMode: undefined, activeWorkStartedAt: undefined, session, sessions };
       });
     }
+  },
+  verifyImplementationChecklist: async () => {
+    const { artifact, agents, providers, appSettings, workspacePath } = get();
+    const steps = artifact.steps;
+    if (!steps.length) {
+      set({ implementationChecklist: [] });
+      return [];
+    }
+
+    const files = workspacePath ? await listWorkspaceFiles(workspacePath).catch(() => []) : [];
+    // Deterministic baseline: always terminates the loop once the project is
+    // genuinely built, even if the verifier model is unavailable.
+    let readyStatus: ProjectReadinessStatus = "unknown";
+    let evidenceContents: Record<string, string> = {};
+    if (workspacePath && files.length) {
+      try {
+        const stubFiles = await detectScaffoldStubFiles(workspacePath, files);
+        readyStatus = validateProjectCompleteness(artifact, files, undefined, stubFiles).status;
+        evidenceContents = await buildChecklistEvidenceContents(workspacePath, files);
+      } catch {
+        readyStatus = "unknown";
+      }
+    }
+    const fallback = heuristicChecklist(steps, files, readyStatus, evidenceContents);
+
+    // Prefer a non-coding reviewer to judge acceptance; fall back to any agent.
+    const verifier = agents.find((agent) => agent.role === "arbiter")
+      ?? agents.find((agent) => agent.role === "tester")
+      ?? agents.find((agent) => agent.role === "critic")
+      ?? agents.find((agent) => agent.role !== "coder")
+      ?? agents[0];
+
+    let merged = fallback;
+    if (verifier && workspacePath) {
+      try {
+        const snapshot = await buildWorkspaceSnapshot(workspacePath);
+        const prompt = renderVerificationPrompt(steps);
+        const now = new Date().toISOString();
+        const context: ChatMessage[] = [
+          ...(snapshot ? [{ id: "verify-snapshot-" + Date.now(), author: "user" as const, text: snapshot, createdAt: now, tokens: Math.ceil(snapshot.length / 4) }] : []),
+          { id: "verify-plan-" + Date.now(), author: "user" as const, text: prompt, createdAt: now, tokens: Math.ceil(prompt.length / 4) },
+        ];
+        // Analysis pass, not file writing → planning mode so the provider does
+        // not inject "return file blocks" instructions.
+        const completion = await completeWithModelFallback(providers, verifier, context, "planning", appSettings.modelFallbackEnabled);
+        const verdicts = parseChecklistVerdict(completion.result.text, steps);
+        merged = mergeChecklist(steps, verdicts, fallback);
+      } catch {
+        // Verifier failed → keep the deterministic baseline. Never abort the run.
+        merged = fallback;
+      }
+    }
+
+    set({ implementationChecklist: merged });
+    return merged;
   },
 }));

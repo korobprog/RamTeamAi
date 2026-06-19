@@ -107,6 +107,7 @@ export function ChatScreen() {
   const mcpServers = useAppStore((state) => state.mcpServers);
   const runTeam = useAppStore((state) => state.runTeam);
   const runAuto = useAppStore((state) => state.runAuto);
+  const startAgentImplementation = useAppStore((state) => state.startAgentImplementation);
   const enqueueAgentQuestion = useAppStore((state) => state.enqueueAgentQuestion);
   const clearQueuedAgentQuestion = useAppStore((state) => state.clearQueuedAgentQuestion);
   const appSettings = useAppStore((state) => state.appSettings);
@@ -136,6 +137,7 @@ export function ChatScreen() {
   const setSessionMode = useAppStore((state) => state.setSessionMode);
   const setScreen = useAppStore((state) => state.setScreen);
   const artifact = useAppStore((state) => state.artifact);
+  const implementationChecklist = useAppStore((state) => state.implementationChecklist);
   const busy = useAppStore((state) => state.busy);
   const activeRunMode = useAppStore((state) => state.activeRunMode);
   const liveFileActivity = useAppStore((state) => state.liveFileActivity);
@@ -161,7 +163,10 @@ export function ChatScreen() {
   const debateRoles = agentMessages.map((message) => message.agentRole as AgentRole);
   const showDebateSummary = hasUserTask && session.mode === "planning" && agentMessages.length > 0;
   const showTaskGuard = canChat && !hasUserTask && !busy;
-  const canRunImplementation = canChat && hasUserTask && (artifact.status === "scaffolded" || artifact.status === "built");
+  const checklistCurrent = implementationChecklist.length === artifact.steps.length && artifact.steps.every((step, index) => implementationChecklist[index]?.step === step);
+  const checklistDone = checklistCurrent && implementationChecklist.length > 0 && implementationChecklist.every((item) => item.done);
+  const implementationComplete = artifact.status === "built" || checklistDone;
+  const canRunImplementation = canChat && hasUserTask && artifact.status === "scaffolded" && !implementationComplete;
   const implementationStarted = canRunImplementation && session.mode !== "planning" && agentMessages.length > 0;
   const latestSystemMessage = [...session.messages].reverse().find((message) => message.author === "system");
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -215,7 +220,7 @@ export function ChatScreen() {
       await runAuto(value);
       return;
     }
-    await runTeam(value, "planning", selectedQuestionAgentId);
+    await runTeam(value, "planning");
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -234,7 +239,11 @@ export function ChatScreen() {
   }
 
   async function handleRunImplementationRound() {
-    if (!canRunImplementation || busy) return;
+    if (!canRunImplementation || busy || autoRunning) return;
+    if (appSettings.autoMode) {
+      await startAgentImplementation();
+      return;
+    }
     await runTeam("Режим реализации: выполняйте PLAN.md как команда разработчиков. Не обсуждайте по кругу: для каждого ответа укажите конкретные файлы, действие create/update/delete, код или diff и команды проверки.", "implementation");
   }
 
@@ -605,7 +614,25 @@ export function ChatScreen() {
           {session.messages.length === 0 ? (
             <div className="empty-chat">
               <b>{canChat ? "Новая сессия готова" : activeProject ? "Активных сессий нет" : "Активных проектов нет"}</b>
-              <p>{canChat ? "Опишите задачу — после первой реплики вкладка получит название проекта и сохранится в списке сессий." : activeProject ? "Нажмите + в блоке «Сессии», чтобы создать новую сессию, или восстановите её из архива." : "Нажмите + в блоке «Проекты», чтобы создать новый проект, или восстановите проект из архива."}</p>
+              <p>{canChat ? "Опишите задачу — после первой реплики вкладка получит название проекта и сохранится в списке сессий." : activeProject ? "Нажмите + в блоке «Сессии», чтобы создать новую сессию, или восстановите её из архива." : "Создайте новый проект или откройте «Топологию», чтобы сначала выбрать тип команды."}</p>
+              {!canChat ? (
+                <div className="empty-chat-actions">
+                  {activeProject ? (
+                    <button className="primary" type="button" onClick={() => createSession()}>
+                      <i className="ti ti-message-plus" aria-hidden="true" /> Создать сессию
+                    </button>
+                  ) : (
+                    <>
+                      <button className="primary" type="button" onClick={() => createProject()}>
+                        <i className="ti ti-plus" aria-hidden="true" /> Создать проект
+                      </button>
+                      <button type="button" onClick={() => setScreen("topology")}>
+                        <i className="ti ti-sitemap" aria-hidden="true" /> Выбрать тип команды
+                      </button>
+                    </>
+                  )}
+                </div>
+              ) : null}
             </div>
           ) : session.messages.map((message) => (
             <MessageItem key={message.id} message={message} author={messageAuthorLabel(message)} />
@@ -654,7 +681,7 @@ export function ChatScreen() {
           {!busy && showDebateSummary ? (
             <DebateSummary artifact={artifact} roles={debateRoles} onGoToBuild={() => setScreen("build")} />
           ) : null}
-          {!busy && canRunImplementation ? (
+          {!busy && !autoRunning && !appSettings.autoMode && canRunImplementation ? (
             <div className="chat-implementation-cta pulse-cta">
               <b>{implementationStarted ? "Реализация идёт — это не сброс плана" : "Дальше — запустить работу агентов"}</b>
               <p>{implementationStarted

@@ -6,7 +6,7 @@ import type {
   ProviderHealthStatus,
 } from "../types";
 
-export const DEFAULT_AGENT_LEASE_TIMEOUT_SEC = 90;
+export const DEFAULT_AGENT_LEASE_TIMEOUT_SEC = 180;
 export const DEFAULT_PROVIDER_HEALTH_INTERVAL_SEC = 60;
 export const CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3;
 export const CIRCUIT_BREAKER_COOLDOWN_MS = 2 * 60 * 1000;

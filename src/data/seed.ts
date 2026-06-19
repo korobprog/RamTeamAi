@@ -1,4 +1,4 @@
-import type { AgentConfig, McpServerConfig, PlanArtifact, ProjectConfig, ProviderConfig, SessionConfig, TopologyConfig } from "../types";
+﻿import type { AgentConfig, McpServerConfig, PlanArtifact, ProjectConfig, ProviderConfig, SessionConfig, TopologyConfig } from "../types";
 
 const ctx128 = { streaming: true, toolUse: true, vision: true, maxContext: 128_000 };
 const ctx200 = { streaming: true, toolUse: true, vision: true, maxContext: 200_000 };
@@ -55,12 +55,12 @@ export const providersSeed: ProviderConfig[] = [
   },
   {
     id: "ollama",
-    name: "Ollama · локально",
+    name: "Ollama В· Р»РѕРєР°Р»СЊРЅРѕ",
     kind: "ollama",
     baseUrl: "http://localhost:11434/api",
     auth: "none",
     stream: "jsonl",
-    maskedKey: "ключ не нужен",
+    maskedKey: "РєР»СЋС‡ РЅРµ РЅСѓР¶РµРЅ",
     status: "warning",
     capabilities: ctxLocal,
     models: [
@@ -147,7 +147,7 @@ export const agentsSeed: AgentConfig[] = [
 export const projectsSeed: ProjectConfig[] = [
   {
     id: "project-default",
-    title: "Новый проект",
+    title: "РќРѕРІС‹Р№ РїСЂРѕРµРєС‚",
     status: "draft",
     createdAt: new Date(0).toISOString(),
     updatedAt: new Date(0).toISOString(),
@@ -157,7 +157,7 @@ export const projectsSeed: ProjectConfig[] = [
 export const sessionSeed: SessionConfig = {
   id: "session-default",
   projectId: "project-default",
-  title: "Новая сессия",
+  title: "РќРѕРІР°СЏ СЃРµСЃСЃРёСЏ",
   mode: "planning",
   tokenBudget: 120_000,
   tokensUsed: 0,
@@ -167,13 +167,13 @@ export const sessionSeed: SessionConfig = {
 export const topologySeed: TopologyConfig = { kind: "debate", maxRounds: 6, arbiterAgentId: "architect" };
 
 export const planArtifactSeed: PlanArtifact = {
-  id: "artifact-RamTeamAi-plan",
-  title: "Решение команды",
-  stack: ["Tauri 2", "React + TypeScript", "Zustand", "Rust commands", "SQLite", "OS keychain"],
-  steps: ["Собрать каркас Tauri + Vite + React и базовый Chat UI", "Добавить Universal Connector: OpenAI/Gemini/Ollama/custom mapping", "Включить Orchestrator: supervisor, debate, pipeline и общий context bus", "Подключить MCP Manager и web-search как инструмент", "Сделать Planning Mode с арбитром, лимитами и редактируемым артефактом", "Реализовать безопасный Project Builder с подтверждением"],
-  projectTree: "RamTeamAi/\n├─ src/\n│  ├─ components/\n│  ├─ screens/\n│  ├─ providers/\n│  ├─ orchestrator/\n│  ├─ mcp/\n│  └─ projectBuilder/\n├─ src-tauri/\n│  └─ src/core/\n├─ design/\n└─ PLAN.md",
+  id: "artifact-empty-plan",
+  title: "\u0420\u0435\u0448\u0435\u043d\u0438\u0435 \u043a\u043e\u043c\u0430\u043d\u0434\u044b",
+  stack: [],
+  steps: [],
+  projectTree: "",
   status: "draft",
-  edited: true,
+  edited: false,
 };
 
 export const mcpServersSeed: McpServerConfig[] = [
@@ -184,3 +184,4 @@ export const mcpServersSeed: McpServerConfig[] = [
   { id: "sequential-thinking", name: "Sequential Thinking", transport: "stdio", commandOrUrl: "npx -y @modelcontextprotocol/server-sequential-thinking", enabled: false, tools: [], status: "not-configured" },
   { id: "playwright", name: "Playwright browser", transport: "stdio", commandOrUrl: "npx -y @playwright/mcp@latest", enabled: false, tools: [], status: "not-configured" },
 ];
+

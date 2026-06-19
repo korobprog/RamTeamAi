@@ -409,7 +409,7 @@ fn tauri_react_scaffold_files(artifact: &PlanArtifact) -> Vec<(&'static str, Str
         ),
         (
             "src/main.tsx",
-            "import React from \"react\";\nimport ReactDOM from \"react-dom/client\";\nimport App from \"./App\";\nimport \"./styles.css\";\n\nReactDOM.createRoot(document.getElementById(\"root\") as HTMLElement).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>,\n);\n".into(),
+            "import React from \"react\";\nimport ReactDOM from \"react-dom/client\";\nimport App from \"./App\";\nimport \"./index.css\";\n\nReactDOM.createRoot(document.getElementById(\"root\") as HTMLElement).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>,\n);\n".into(),
         ),
         (
             "src/App.tsx",
@@ -418,7 +418,7 @@ fn tauri_react_scaffold_files(artifact: &PlanArtifact) -> Vec<(&'static str, Str
             ),
         ),
         (
-            "src/styles.css",
+            "src/index.css",
             ":root { font-family: Inter, system-ui, sans-serif; color: #1f2937; background: #f8fafc; }\nbody { margin: 0; }\n.app-shell { min-height: 100vh; display: grid; place-content: center; gap: 12px; padding: 48px; text-align: center; }\n.app-shell h1 { margin: 0; font-size: clamp(32px, 6vw, 64px); }\n.app-shell p { margin: 0; color: #64748b; }\n".into(),
         ),
         (

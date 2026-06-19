@@ -36,6 +36,11 @@ describe("projectBuilder assignments", () => {
 });
 
 describe("project completeness", () => {
+  it("uses the Vite-standard src/index.css scaffold file", () => {
+    expect(TAURI_REACT_REQUIRED_FILES).toContain("src/index.css");
+    expect(TAURI_REACT_REQUIRED_FILES).not.toContain("src/styles.css");
+  });
+
   it("accepts a complete Tauri + React scaffold", () => {
     const report = validateProjectCompleteness(artifact, [...TAURI_REACT_REQUIRED_FILES, "README.md"]);
 

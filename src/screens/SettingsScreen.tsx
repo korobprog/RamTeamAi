@@ -335,7 +335,7 @@ export function SettingsScreen() {
               min={15}
               max={900}
               value={appSettings.agentLeaseTimeoutSec}
-              onChange={(event) => setAppSettings({ agentLeaseTimeoutSec: Math.max(15, Number(event.target.value) || 90) })}
+              onChange={(event) => setAppSettings({ agentLeaseTimeoutSec: Math.max(15, Number(event.target.value) || 180) })}
             />
           </label>
         </div>
@@ -347,9 +347,21 @@ export function SettingsScreen() {
           />
           <span>
             <b>Авто-режим: дойти до результата без подтверждений</b>
-            <small>Команда сама проходит планирование → каркас → раунды реализации и пишет файлы, пока появляются новые. Лимит раундов: {appSettings.autoMaxRounds}. Тумблер «Авто» есть и в чате.</small>
+            <small>Команда сама проходит планирование → каркас → раунды реализации и пишет файлы, пока чеклист не закрыт или не достигнут лимит. Тумблер «Авто» есть и в чате.</small>
           </span>
         </label>
+        <div className="form-grid compact">
+          <label>
+            Максимум раундов реализации
+            <input
+              type="number"
+              min={1}
+              max={12}
+              value={appSettings.autoMaxRounds}
+              onChange={(event) => setAppSettings({ autoMaxRounds: Math.min(12, Math.max(1, Number(event.target.value) || 12)) })}
+            />
+          </label>
+        </div>
         <label className="settings-toggle-row">
           <input
             type="checkbox"

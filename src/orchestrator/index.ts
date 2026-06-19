@@ -1,4 +1,5 @@
 import type { AgentConfig, ChatMessage, PlanArtifact, TopologyConfig } from "../types";
+import { isNonBlockingImplementationStep } from "./checklist";
 
 const roleLines: Record<string, string> = {
   architect: "Архитектор связывает требования, доменную модель, границы модулей и технические риски.",
@@ -219,7 +220,7 @@ function normalizeTechLabel(item: string): string {
 
 function buildSteps(messages: ChatMessage[], title: string, stack: string[]): string[] {
   const extracted = extractExplicitSteps(messages);
-  if (extracted.length >= 3) return extracted.slice(0, 8);
+  if (extracted.length >= 2) return extracted.slice(0, 8);
 
   const mainTech = stack[0] ?? "выбранном стеке";
   return [
@@ -259,9 +260,15 @@ function extractExplicitSteps(messages: ChatMessage[]): string[] {
 }
 
 function cleanupStep(step: string): string {
-  const cleaned = step.replace(/^[\[\]x\s-]+/i, "").replace(/\s+/g, " ").trim();
+  let cleaned = step.replace(/^[\[\]x\s-]+/i, "").replace(/\s+/g, " ").trim();
   if (!cleaned) return "";
   if (/^(stack|стек|технологии)\b/i.test(cleaned)) return "";
+  cleaned = cleaned
+    .replace(/\s*(?:,|;|—|-)?\s*(?:затем|после этого|и)\s+(?:запустить|запусти|проверить|прогнать)\s+`?(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|build|test|lint|check)`?.*$/i, "")
+    .replace(/\s*(?:,|;|—|-)?\s*(?:затем|после этого|и)\s+проверить\s+(?:сборку|тесты|smoke).*$/i, "")
+    .replace(/\s*(?:,|;|—|-)?\s*(?:затем|после этого|и)\s+запустить\s+(?:dev|build|test|lint).*$/i, "")
+    .trim();
+  if (!cleaned || isNonBlockingImplementationStep(cleaned)) return "";
   return cleaned.replace(/[.;]+$/, "");
 }
 

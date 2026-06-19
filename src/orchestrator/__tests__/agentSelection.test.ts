@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { implementationRank, selectImplementationAgents } from "../agentSelection";
+import { agentsSeed } from "../../data/seed";
+import { implementationRank, selectImplementationAgents, selectRunAgents } from "../agentSelection";
 import type { AgentConfig, AgentRole, ToolKind } from "../../types";
 
 function agent(id: string, role: AgentRole, tools: ToolKind[] = []): AgentConfig {
@@ -25,9 +26,9 @@ describe("implementationRank", () => {
 });
 
 describe("selectImplementationAgents", () => {
-  it("keeps all agents when within the limit", () => {
-    const team = [agent("a", "architect"), agent("c", "coder")];
-    expect(selectImplementationAgents(team, 3)).toHaveLength(2);
+  it("prefers coders even when project-builder planning roles are within the limit", () => {
+    const team = [agent("a", "architect", ["project-builder"]), agent("c", "coder")];
+    expect(selectImplementationAgents(team, 3).map((item) => item.id)).toEqual(["c"]);
   });
 
   it("always includes an engineer so the round can write files", () => {
@@ -39,9 +40,48 @@ describe("selectImplementationAgents", () => {
       agent("c", "coder", ["project-builder", "files"]),
     ];
     const selected = selectImplementationAgents(team, 3);
-    expect(selected).toHaveLength(3);
     expect(selected.some((item) => item.role === "coder")).toBe(true);
     // The engineer should lead the round.
     expect(selected[0].role).toBe("coder");
+  });
+
+  it("filters out review-only roles when code-capable agents are available", () => {
+    const team = [
+      agent("cr", "critic", ["files"]),
+      agent("r", "researcher", ["mcp"]),
+      agent("c", "coder", ["project-builder", "files"]),
+      agent("a", "architect", ["project-builder"]),
+    ];
+    const selected = selectImplementationAgents(team, 3);
+    expect(selected.map((item) => item.id)).toEqual(["c"]);
+  });
+
+  it("falls back to project-builder agents only when no coder exists", () => {
+    const team = [
+      agent("cr", "critic", ["files"]),
+      agent("a", "architect", ["project-builder"]),
+    ];
+    expect(selectImplementationAgents(team, 3).map((item) => item.id)).toEqual(["a"]);
+  });
+
+  it("uses only coder agents from the default team for implementation", () => {
+    expect(selectImplementationAgents(agentsSeed, 3).map((item) => item.role)).toEqual(["coder"]);
+  });
+});
+
+describe("selectRunAgents", () => {
+  it("keeps pipeline topology for planning", () => {
+    const team = [agent("a", "architect"), agent("cr", "critic"), agent("r", "researcher"), agent("c", "coder")];
+    expect(selectRunAgents(team, { mode: "planning", topologyKind: "pipeline" }).map((item) => item.id)).toEqual(["a", "cr", "r", "c"]);
+  });
+
+  it("ignores pipeline topology during implementation and runs only code-capable agents", () => {
+    const team = [
+      agent("a", "architect"),
+      agent("cr", "critic"),
+      agent("r", "researcher"),
+      agent("c", "coder", ["project-builder", "files"]),
+    ];
+    expect(selectRunAgents(team, { mode: "implementation", topologyKind: "pipeline", implementationLimit: 3 }).map((item) => item.id)).toEqual(["c"]);
   });
 });

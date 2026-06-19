@@ -10,7 +10,7 @@ export const TAURI_REACT_REQUIRED_FILES = [
   "index.html",
   "src/main.tsx",
   "src/App.tsx",
-  "src/styles.css",
+  "src/index.css",
   "src-tauri/Cargo.toml",
   "src-tauri/tauri.conf.json",
   "src-tauri/build.rs",
@@ -396,7 +396,7 @@ function renderTauriReactScaffold(artifact: PlanArtifact): Record<string, string
       'import React from "react";',
       'import ReactDOM from "react-dom/client";',
       'import App from "./App";',
-      'import "./styles.css";',
+      'import "./index.css";',
       "",
       'ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(',
       "  <React.StrictMode>",
@@ -416,7 +416,7 @@ function renderTauriReactScaffold(artifact: PlanArtifact): Record<string, string
       "}",
       "",
     ].join("\n"),
-    "src/styles.css": [
+    "src/index.css": [
       ":root { font-family: Inter, system-ui, sans-serif; color: #1f2937; background: #f8fafc; }",
       "body { margin: 0; }",
       ".app-shell { min-height: 100vh; display: grid; place-content: center; gap: 12px; padding: 48px; text-align: center; }",
