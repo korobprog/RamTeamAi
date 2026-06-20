@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6
+
+- Added explicit workspace access confirmation for existing projects.
+- Auto-configured Filesystem MCP to the selected project folder.
+- Attached workspace snapshots for audit/review prompts so agents can inspect existing code after folder access is granted.
+
+
 ## 0.1.5
 
 - Fixed post-update GitHub profile status when Firebase cloud sync is not configured in release builds.
