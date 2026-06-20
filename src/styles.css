@@ -17,6 +17,7 @@ button:disabled { opacity: .55; cursor: wait; }
 .profile-pill small { color: var(--color-text-tertiary); font-size: 10px; }
 .profile-avatar { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: var(--color-background-info); color: var(--color-text-info); }
 .profile-avatar img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
+.avatar-initial { font-size: 12px; font-weight: 600; line-height: 1; }
 .settings-button { width: 40px; height: 40px; display: grid; place-items: center; padding: 0; border-color: var(--color-border-tertiary); background: var(--color-background-primary); color: var(--color-text-secondary); }
 .settings-button i { font-size: 18px; }
 .settings-button.active { color: var(--color-text-info); background: var(--color-background-info); border-color: var(--color-border-info); }
@@ -364,6 +365,7 @@ label input, label select, label textarea, .textarea-label textarea { display: b
 .settings-profile-avatar { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 50%; background: var(--color-background-info); color: var(--color-text-info); }
 .settings-profile-avatar img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
 .settings-profile-avatar i { font-size: 22px; }
+.settings-profile-avatar .avatar-initial { font-size: 16px; }
 .app-meta-stack { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .settings-section { display: grid; gap: 12px; }
 .settings-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }

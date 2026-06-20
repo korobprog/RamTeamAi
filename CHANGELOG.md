@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+
+- Fixed post-update GitHub profile status when Firebase cloud sync is not configured in release builds.
+- Added resilient GitHub avatar fallback so blocked avatar images show the profile initial instead of a broken image.
+
 ## 0.1.4
 
 - Neurogate moved to the top of the provider list.

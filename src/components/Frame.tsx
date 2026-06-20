@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { ScreenId, ThemePreference } from "../types";
 import { useAppStore } from "../store/appStore";
+import { GithubAvatar } from "./GithubAvatar";
 
 const themeOrder: ThemePreference[] = ["system", "light", "dark", "vibe"];
 const themeMeta: Record<ThemePreference, { icon: string; label: string }> = {
@@ -38,9 +39,7 @@ export function FRamTeamAie({ children }: { children: ReactNode }) {
         <header className="titlebar">
           <div className="titlebar-left">
             <button className="profile-pill" type="button" onClick={() => setScreen("chat")} title="Профиль пользователя">
-              <span className="profile-avatar">
-                {account.github?.avatarUrl ? <img src={account.github.avatarUrl} alt="" /> : <i className="ti ti-user" aria-hidden="true" />}
-              </span>
+              <GithubAvatar profile={account.github} className="profile-avatar" />
               <span>
                 <b>{profileName}</b>
                 <small>{profileSubtitle}</small>

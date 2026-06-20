@@ -144,6 +144,8 @@ const WORKSPACE_SNAPSHOT_FILE_CHAR_LIMIT = 6_000;
 // the snapshot to spend the budget on real source files.
 const WORKSPACE_SNAPSHOT_SKIP = new Set(["IMPLEMENTATION.md", "docs/agent-tasks.md", "docs/plan.md"]);
 
+const WORKSPACE_CONTEXT_PROMPT_PATTERN = /\b(audit|review|inspect|read|analy[sz]e|debug|refactor)\b|аудит|проверь|проанализ|прочита|посмотри|файл|код|баг|ошибк|рефактор/i;
+
 // Read existing workspace files so implementation agents edit real content
 // instead of regenerating files blindly. Returns undefined when nothing is on
 // disk yet (first build) so we don't inject an empty section.
@@ -218,6 +220,11 @@ async function buildWorkspaceSnapshot(rootPath: string): Promise<string | undefi
     "",
     sections.join("\n\n"),
   ].filter(Boolean).join("\n");
+}
+
+function shouldAttachWorkspaceSnapshot(prompt: string, mode: AgentRunMode): boolean {
+  if (mode === "implementation") return true;
+  return WORKSPACE_CONTEXT_PROMPT_PATTERN.test(prompt);
 }
 
 async function buildChecklistEvidenceContents(rootPath: string, files: string[]): Promise<Record<string, string>> {
@@ -1329,12 +1336,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         sync: {
           ...state.account.sync,
           enabled: Boolean(firebaseUid),
-          status: firebaseUid ? "ready" : "disabled",
+          status: profile ? "ready" : firebaseUid ? "ready" : "disabled",
           message: firebaseUid
-            ? "GitHub подключен, Firebase синхронизация готова."
-            : isFirebaseConfigured()
-              ? "GitHub подключен. Firebase будет привязан после следующего входа."
-              : "GitHub подключен локально. Для облачной синхронизации добавьте Firebase config.",
+            ? "GitHub profile connected. Firebase cloud sync is ready."
+            : profile
+              ? isFirebaseConfigured()
+                ? "GitHub profile connected. Reconnect GitHub once to enable Firebase cloud sync."
+                : "GitHub profile connected locally. Firebase cloud sync is not configured in this build."
+              : "GitHub profile is not connected.",
         },
       },
     }));
@@ -1414,12 +1423,16 @@ export const useAppStore = create<AppState>((set, get) => ({
           firebaseUid,
           sync: {
             enabled: Boolean(firebaseUid),
-            status: firebaseUid ? "ready" : firebaseError ? "error" : "disabled",
+            status: profile ? "ready" : firebaseUid ? "ready" : firebaseError ? "error" : "disabled",
             message: firebaseUid
-              ? "GitHub подключен, Firebase синхронизация готова."
-              : firebaseError
-                ? "GitHub подключен локально, но Firebase не принял вход: " + firebaseError
-                : "GitHub подключен локально. Firebase config не задан.",
+              ? "GitHub profile connected. Firebase cloud sync is ready."
+              : profile
+                ? firebaseError
+                  ? "GitHub profile connected locally. Firebase cloud sync is unavailable: " + firebaseError
+                  : "GitHub profile connected locally. Firebase cloud sync is not configured in this build."
+                : firebaseError
+                  ? "Firebase sign-in failed: " + firebaseError
+                  : "GitHub profile is not connected.",
           },
         },
       }));
@@ -1456,7 +1469,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((state) => ({
         account: {
           ...state.account,
-          sync: { ...state.account.sync, status: "error", message: "Сначала войдите через GitHub и Firebase." },
+          sync: {
+            ...state.account.sync,
+            status: state.account.github ? "ready" : "error",
+            message: state.account.github
+              ? "GitHub profile is connected locally. Firebase cloud sync is not configured for this build."
+              : "Connect GitHub first, then configure Firebase cloud sync.",
+          },
         },
       }));
       return;
@@ -1498,7 +1517,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((state) => ({
         account: {
           ...state.account,
-          sync: { ...state.account.sync, status: "error", message: "Сначала войдите через GitHub и Firebase." },
+          sync: {
+            ...state.account.sync,
+            status: state.account.github ? "ready" : "error",
+            message: state.account.github
+              ? "GitHub profile is connected locally. Firebase cloud sync is not configured for this build."
+              : "Connect GitHub first, then configure Firebase cloud sync.",
+          },
         },
       }));
       return;

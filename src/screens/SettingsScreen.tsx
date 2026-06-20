@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Chip, SectionTitle } from "../components/FRamTeamAie";
+import { GithubAvatar } from "../components/GithubAvatar";
 import { describeMcpHealth, listAvailableTools } from "../mcp/manager";
 import { useAppStore } from "../store/appStore";
 import { APP_GITHUB_URL, APP_VERSION } from "../config/appMeta";
@@ -92,6 +93,14 @@ export function SettingsScreen() {
   const activeProject = projects.find((project) => project.id === activeProjectId && !project.archivedAt);
   const linkedProjects = projects.filter((project) => project.github).length;
   const operatorProvider = providers.find((provider) => provider.id === appSettings.operatorAssistantProviderId) ?? providers[0];
+  const accountStatusLabel = account.github
+    ? account.firebaseUid
+      ? "GitHub + Firebase"
+      : "GitHub connected"
+    : account.sync.status;
+  const accountStatusTone = account.github ? "success" : account.sync.status === "error" ? "warning" : "info";
+  const cloudSyncUnavailable = Boolean(account.github && !account.firebaseUid);
+
 
   const settingsCards: SettingsCard[] = [
     {
@@ -199,9 +208,7 @@ export function SettingsScreen() {
       <SectionTitle icon="settings" title="Настройки программы" subtitle="Быстрый центр управления: MCP, провайдеры, агенты, рабочая папка и поддержка развития." />
 
       <section className="settings-profile-card">
-        <div className="settings-profile-avatar">
-          {account.github?.avatarUrl ? <img src={account.github.avatarUrl} alt="" /> : <i className="ti ti-user" aria-hidden="true" />}
-        </div>
+        <GithubAvatar profile={account.github} className="settings-profile-avatar" />
         <div>
           <h3>{account.github ? account.github.name || account.github.login : "Профиль пользователя"}</h3>
           <p>{account.github ? "GitHub @" + account.github.login + ". Firebase хранит только настройки, без диалогов и секретных ключей." : "Подключите GitHub, чтобы привязывать проекты к репозиториям и синхронизировать настройки через Firebase."}</p>
@@ -218,14 +225,14 @@ export function SettingsScreen() {
             <h3>GitHub и облачная синхронизация</h3>
             <p>Токен GitHub хранится только в системном keychain. В Firebase отправляются настройки, агенты, провайдеры без ключей и привязки проектов к repo.</p>
           </div>
-          <Chip tone={account.sync.status === "ready" ? "success" : account.sync.status === "error" ? "warning" : "info"}>{account.sync.status}</Chip>
+          <Chip tone={accountStatusTone}>{accountStatusLabel}</Chip>
         </div>
         <div className="account-actions">
           <button className="primary" type="button" disabled={busy} onClick={() => void startGithubLogin()}>
             <i className="ti ti-brand-github" aria-hidden="true" /> {account.github ? "Переподключить GitHub" : "Войти через GitHub"}
           </button>
-          <button type="button" disabled={busy || !account.firebaseUid} onClick={() => void syncSettingsToCloud()}>Сохранить настройки в Firebase</button>
-          <button type="button" disabled={busy || !account.firebaseUid} onClick={() => void restoreSettingsFromCloud()}>Загрузить настройки</button>
+          <button type="button" title={cloudSyncUnavailable ? "Firebase sync is not configured in this build." : undefined} disabled={busy || !account.firebaseUid} onClick={() => void syncSettingsToCloud()}>Сохранить настройки в Firebase</button>
+          <button type="button" title={cloudSyncUnavailable ? "Firebase sync is not configured in this build." : undefined} disabled={busy || !account.firebaseUid} onClick={() => void restoreSettingsFromCloud()}>Загрузить настройки</button>
           <button className="ghost" type="button" disabled={busy || !account.github} onClick={() => void disconnectAccount()}>Отключить</button>
           <button className="ghost" type="button" onClick={() => void openProjectRepository()}><i className="ti ti-brand-github" aria-hidden="true" /> GitHub RamTeamAi</button>
         </div>
