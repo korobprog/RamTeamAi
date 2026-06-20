@@ -50,6 +50,7 @@ RamTeamAi — настольный AI-клиент на **Tauri 2 + React + Type
 
 | Версия | Дата | Что сделано | Артефакты |
 | --- | --- | --- | --- |
+| `0.1.4` | 2026-06-20 | Neurogate moved to the top of providers; added compact Neurogate API referral CTA with `$5` first top-up bonus; protected the referral link through CODEOWNERS and GitHub Actions. | Windows: [AppSetup.exe](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.4/AppSetup.exe) / [NSIS installer](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.4/RamTeamAi_0.1.4_x64-setup.exe); macOS: [DMG](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.4/RamTeamAi_0.1.4_universal.dmg); updater: [latest.json](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.4/latest.json) |
 | `0.1.3` | 2026-06-20 | Protected donation wallets via CODEOWNERS/GitHub Actions guard; added GitHub link, app version display in Settings, and non-draft GitHub releases for updater visibility. | Windows: [AppSetup.exe](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.3/AppSetup.exe) / [NSIS installer](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.3/RamTeamAi_0.1.3_x64-setup.exe); macOS: [DMG](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.3/RamTeamAi_0.1.3_universal.dmg); updater: [latest.json](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.3/latest.json) |
 | `0.1.2` | 2026-06-18 | Fixed the in-app updater endpoint; enabled signed updater artifacts (`latest.json` and `.sig`) for the Tauri updater. | Windows: [AppSetup.exe](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.2/AppSetup.exe) / [NSIS installer](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.2/RamTeamAi_0.1.2_x64-setup.exe); macOS: [DMG](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.2/RamTeamAi_0.1.2_universal.dmg); updater: [latest.json](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.2/latest.json) |
 | `0.1.1` | 2026-06-18 | Обновлена desktop-сборка и опубликован релиз для Windows и macOS. | Windows: [AppSetup.exe](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.1/AppSetup.exe) / [NSIS installer](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.1/RamTeamAi_0.1.1_x64-setup.exe); macOS: [DMG](https://github.com/korobprog/RamTeamAi/releases/download/v0.1.1/RamTeamAi_0.1.1_universal.dmg) |
@@ -57,8 +58,8 @@ RamTeamAi — настольный AI-клиент на **Tauri 2 + React + Type
 
 - Windows публикуем как NSIS installer: `npm run release:windows`.
 - macOS публикуем как DMG: `npm run release:mac`.
-- Подготовлен новый релиз 0.1.3: синхронизированы версии проекта и заметки к сборке.
-- Версию синхронизируем командой `npm run version:set -- 0.1.3`.
+- Подготовлен новый релиз 0.1.4: синхронизированы версии проекта и заметки к сборке.
+- Версию синхронизируем командой `npm run version:set -- 0.1.4`.
 - Автообновления настроены через Tauri updater и GitHub Releases.
 
 Подробный процесс: [`docs/release.md`](docs/release.md).

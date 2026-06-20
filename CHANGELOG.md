@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4
+
+- Neurogate moved to the top of the provider list.
+- Added a compact Neurogate API connection CTA with the protected referral link and `$5` first top-up bonus.
+- Extended CODEOWNERS/GitHub Actions protection and tests for the Neurogate referral link.
+
 ## 0.1.3
 
 - Подготовлена новая версия 0.1.3; синхронизированы номера версий в package.json, Tauri config, Cargo.toml и README.

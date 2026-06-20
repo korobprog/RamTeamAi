@@ -1,6 +1,6 @@
 [package]
 name = "RamTeamAi"
-version = "0.1.3"
+version = "0.1.4"
 description = "RamTeamAi desktop AI client"
 authors = ["RamTeamAi contributors"]
 edition = "2021"
