@@ -70,6 +70,7 @@ function setChatState(patch: Partial<Record<string, unknown>> = {}) {
     deleteArchive: vi.fn(),
     workspacePath: "mem://workspace",
     selectWorkspaceFolder: vi.fn(),
+    openExistingWorkspaceProject: vi.fn(),
     clearWorkspaceFolder: vi.fn(),
     initWorkspace: vi.fn(),
     lastWorkspaceInit: undefined,

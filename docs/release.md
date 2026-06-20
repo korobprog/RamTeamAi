@@ -101,6 +101,16 @@ Add these repository secrets before publishing:
 
 - `TAURI_SIGNING_PRIVATE_KEY` — the full text content of the private key file.
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — only if the key was generated with a password.
+- `VITE_GITHUB_CLIENT_ID` — GitHub OAuth App client ID used by the desktop Device Flow login.
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_APP_ID`
+- `VITE_FIREBASE_MESSAGING_SENDER_ID`
+
+The `VITE_*` values are compiled into the frontend during the Vite build. They must be
+available to GitHub Actions before `tauri-apps/tauri-action` runs; setting them only in a
+local `.env.local` file does not affect release installers built by CI.
 
 On Windows, copy the private key text with:
 
@@ -121,7 +131,8 @@ It builds:
 - Tauri updater artifacts and signatures
 - `latest.json` for the updater endpoint
 
-The GitHub Release is created as a draft. Review the assets and publish it manually.
+The GitHub Release is created as a published release, not as a draft, so
+`/releases/latest/` points to the newest updater metadata immediately.
 
 ## User update flow
 

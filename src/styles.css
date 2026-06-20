@@ -256,6 +256,9 @@ label input, label select, label textarea, .textarea-label textarea { display: b
 .empty-chat p { font-size: 13px; line-height: 1.5; }
 .empty-chat-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 16px; }
 .empty-chat-actions button { display: inline-flex; align-items: center; gap: 6px; }
+.future-workbench-card { flex: 1 1 100%; margin-top: 6px; padding: 10px 12px; text-align: left; border: 0.5px solid var(--color-border-info); border-radius: 10px; background: color-mix(in srgb, var(--color-background-info) 58%, var(--color-background-primary)); }
+.future-workbench-card b { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: var(--color-text-info); font-size: 12px; }
+.future-workbench-card p { color: var(--color-text-secondary); font-size: 12px; line-height: 1.45; }
 .message { border-left: 3px solid var(--role, var(--color-border-secondary)); padding: 2px 0 2px 10px; }
 .message.system { --role: var(--color-text-info); }
 .message-author { color: var(--role, var(--color-text-secondary)); font-size: 12px; font-weight: 500; }

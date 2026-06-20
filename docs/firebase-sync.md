@@ -68,3 +68,10 @@ Copy `.env.example` to `.env.local` and fill:
 - `VITE_FIREBASE_MESSAGING_SENDER_ID`
 
 GitHub OAuth App must have Device Flow enabled.
+
+## Release env
+
+`VITE_*` variables are Vite build-time variables. For GitHub Release installers
+(`AppSetup.exe`, NSIS and DMG) they must be configured as GitHub Actions repository
+secrets and passed into `.github/workflows/release.yml`; local `.env.local` values are
+used only for local builds.

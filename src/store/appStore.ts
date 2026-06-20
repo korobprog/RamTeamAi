@@ -1001,12 +1001,12 @@ function replaceSession(sessions: SessionConfig[], session: SessionConfig): Sess
     : [session, ...sessions];
 }
 
-function createProjectConfig(index: number): ProjectConfig {
+function createProjectConfig(index: number, title?: string, status: ProjectConfig["status"] = "draft"): ProjectConfig {
   const now = new Date().toISOString();
   return {
     id: "project-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
-    title: index === 0 ? "\u041d\u043e\u0432\u044b\u0439 \u043f\u0440\u043e\u0435\u043a\u0442" : "\u041f\u0440\u043e\u0435\u043a\u0442 " + (index + 1),
-    status: "draft",
+    title: title?.trim() || (index === 0 ? "\u041d\u043e\u0432\u044b\u0439 \u043f\u0440\u043e\u0435\u043a\u0442" : "\u041f\u0440\u043e\u0435\u043a\u0442 " + (index + 1)),
+    status,
     createdAt: now,
     updatedAt: now,
   };
@@ -1137,6 +1137,58 @@ function withSystemMessage(session: SessionConfig, text: string): SessionConfig 
   };
 }
 
+function withAgentPromptMessage(session: SessionConfig, text: string, agentRole: ChatMessage["agentRole"] = "architect"): SessionConfig {
+  const message: ChatMessage = {
+    id: "agent-init-" + Date.now(),
+    author: "agent",
+    agentRole,
+    text,
+    createdAt: new Date().toISOString(),
+    tokens: Math.max(16, Math.ceil(text.length / 4)),
+    actions: [{ kind: "plan", label: "Вопрос пользователю", detail: "Агенты ждут задачу для уже существующего проекта." }],
+  };
+  const messages = [...session.messages, message];
+  return {
+    ...session,
+    messages,
+    tokensUsed: messages.reduce((sum, item) => sum + item.tokens, 0),
+  };
+}
+
+function workspaceTitleFromPath(rootPath: string, fallbackIndex: number): string {
+  const webLabel = rootPath.trim().replace(/^web:\/\//i, "");
+  const parts = webLabel.split(/[\\/]/).map((part) => part.trim()).filter(Boolean);
+  const title = parts.at(-1)?.replace(/[:]+$/, "").trim();
+  return title || "Существующий проект " + (fallbackIndex + 1);
+}
+
+function formatFilePreview(files: string[]): string {
+  if (!files.length) return "Файлы проекта пока не найдены или папка пуста.";
+  const preview = files.slice(0, 8).join(", ");
+  return "Обнаружено файлов: " + files.length + ". Первые: " + preview + (files.length > 8 ? "…" : ".");
+}
+
+function existingWorkspaceIntro(result: WorkspaceInitResult, discoveredFiles: string[]): string {
+  const created = result.createdFiles.length;
+  const existing = result.existingFiles.length;
+  return [
+    "📂 Открыт существующий проект: " + result.rootPath,
+    result.message,
+    "Инициализация безопасная: создано " + created + ", уже было " + existing + ". Существующие MEMORY.md и PLAN.md не перезаписываются.",
+    formatFilePreview(discoveredFiles),
+    "Это не проект с нуля: дальше агенты будут сначала читать текущий код, уточнять цель и только потом предлагать правки.",
+    "В будущем здесь появится «Верстак»: встроенный браузер + чат + DevTools, где вы показываете агентам место правки, а они видят страницу и инструменты разработчика.",
+  ].join("\n");
+}
+
+function existingWorkspaceQuestion(rootPath: string): string {
+  return [
+    "Я инициализировал папку как существующий проект: " + rootPath,
+    "Что вы хотите сделать с ним дальше?",
+    "Можно попросить: провести аудит, найти точку входа, исправить баг, добавить функцию, описать архитектуру, подготовить план миграции или собрать будущий режим «Верстак» с браузером, чатом и DevTools.",
+  ].join("\n");
+}
+
 interface AppState {
   screen: ScreenId;
   account: UserAccountState;
@@ -1210,6 +1262,7 @@ interface AppState {
   clearAgentDialog: () => void;
   updateArtifact: (patch: Partial<PlanArtifact>) => void;
   selectWorkspaceFolder: () => Promise<string | undefined>;
+  openExistingWorkspaceProject: () => Promise<WorkspaceInitResult | undefined>;
   clearWorkspaceFolder: () => void;
   initWorkspace: (announce?: boolean) => Promise<WorkspaceInitResult | undefined>;
   requestBuild: (confirmed: boolean) => Promise<void>;
@@ -2813,6 +2866,57 @@ export const useAppStore = create<AppState>((set, get) => ({
     persistWorkspacePath(selected);
     set({ workspacePath: selected });
     return selected;
+  },
+  openExistingWorkspaceProject: async () => {
+    if (get().busy) return undefined;
+
+    const selected = await pickWorkspaceFolder(get().workspacePath);
+    if (!selected) return undefined;
+
+    persistWorkspacePath(selected);
+    set({ workspacePath: selected, busy: true });
+
+    try {
+      const result = await initWorkspaceFiles(selected);
+      const discoveredFiles = await listWorkspaceFiles(result.rootPath).catch(() => result.files);
+      set((state) => {
+        const project = createProjectConfig(
+          state.projects.length,
+          workspaceTitleFromPath(result.rootPath, state.projects.length),
+          "active",
+        );
+        const baseSession = createSessionConfig(project.id, 0);
+        const session = withAgentPromptMessage(
+          withSystemMessage(baseSession, existingWorkspaceIntro(result, discoveredFiles)),
+          existingWorkspaceQuestion(result.rootPath),
+        );
+        const projects = [project, ...state.projects];
+        const sessions = [session, ...state.sessions];
+        persistProjects(projects);
+        persistSessions(sessions);
+        persistActiveIds(project.id, session.id);
+        return {
+          busy: false,
+          workspacePath: result.rootPath,
+          lastWorkspaceInit: result,
+          projects,
+          sessions,
+          activeProjectId: project.id,
+          activeSessionId: session.id,
+          session,
+          artifact: progressFromSession(session, project).artifact,
+          implementationChecklist: [],
+          lastBuild: undefined,
+          lastRunFilesWritten: undefined,
+          screen: "chat",
+        };
+      });
+      persistWorkspacePath(result.rootPath);
+      return result;
+    } catch (error) {
+      set({ busy: false });
+      throw error;
+    }
   },
   clearWorkspaceFolder: () => {
     void clearStoredWebWorkspaceFolder();

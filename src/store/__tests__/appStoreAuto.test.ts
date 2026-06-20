@@ -213,6 +213,25 @@ describe("appStore auto implementation integration", () => {
     expect(harness.files.get("tests/App.test.tsx")).toContain("@testing-library/react");
   });
 
+  it("opens an existing folder as an initialized active project", async () => {
+    const { useAppStore } = await import("../appStore");
+    harness.files.set("package.json", "{}\n");
+    harness.files.set("src/App.tsx", "export default function App() { return null; }\n");
+
+    const result = await useAppStore.getState().openExistingWorkspaceProject();
+    const state = useAppStore.getState();
+
+    expect(result?.rootPath).toBe("mem://workspace");
+    expect(state.workspacePath).toBe("mem://workspace");
+    expect(state.lastWorkspaceInit?.rootPath).toBe("mem://workspace");
+    expect(state.projects[0].title).toBe("workspace");
+    expect(state.projects[0].status).toBe("active");
+    expect(state.activeProjectId).toBe(state.projects[0].id);
+    expect(state.activeSessionId).toBe(state.session.id);
+    expect(state.session.messages.some((item) => item.text.includes("существующий проект"))).toBe(true);
+    expect(state.session.messages.some((item) => item.agentRole === "architect" && item.text.includes("Что вы хотите сделать"))).toBe(true);
+  });
+
   it("continues automatically after a manual implementation start when auto mode is enabled", async () => {
     const { useAppStore } = await import("../appStore");
     const steps = [

@@ -235,6 +235,7 @@ export function ChatScreen() {
   const deleteArchive = useAppStore((state) => state.deleteArchive);
   const workspacePath = useAppStore((state) => state.workspacePath);
   const selectWorkspaceFolder = useAppStore((state) => state.selectWorkspaceFolder);
+  const openExistingWorkspaceProject = useAppStore((state) => state.openExistingWorkspaceProject);
   const clearWorkspaceFolder = useAppStore((state) => state.clearWorkspaceFolder);
   const initWorkspace = useAppStore((state) => state.initWorkspace);
   const lastWorkspaceInit = useAppStore((state) => state.lastWorkspaceInit);
@@ -351,6 +352,17 @@ export function ChatScreen() {
     setSelectingWorkspace(true);
     try {
       await selectWorkspaceFolder();
+    } finally {
+      setSelectingWorkspace(false);
+    }
+  }
+
+  async function handleOpenExistingProject() {
+    if (busy) return;
+    setSelectingWorkspace(true);
+    try {
+      const result = await openExistingWorkspaceProject();
+      if (result) openChatView();
     } finally {
       setSelectingWorkspace(false);
     }
@@ -738,7 +750,7 @@ export function ChatScreen() {
           {session.messages.length === 0 ? (
             <div className="empty-chat">
               <b>{canChat ? "Новая сессия готова" : activeProject ? "Активных сессий нет" : "Активных проектов нет"}</b>
-              <p>{canChat ? "Опишите задачу — после первой реплики вкладка получит название проекта и сохранится в списке сессий." : activeProject ? "Нажмите + в блоке «Сессии», чтобы создать новую сессию, или восстановите её из архива." : "Создайте новый проект или откройте «Топологию», чтобы сначала выбрать тип команды."}</p>
+              <p>{canChat ? "Опишите задачу — после первой реплики вкладка получит название проекта и сохранится в списке сессий." : activeProject ? "Нажмите + в блоке «Сессии», чтобы создать новую сессию, или восстановите её из архива." : "Создайте новый проект, откройте существующую папку или настройте «Топологию», чтобы выбрать тип команды."}</p>
               {!canChat ? (
                 <div className="empty-chat-actions">
                   {activeProject ? (
@@ -750,9 +762,16 @@ export function ChatScreen() {
                       <button className="primary" type="button" onClick={() => createProject()}>
                         <i className="ti ti-plus" aria-hidden="true" /> Создать проект
                       </button>
+                      <button type="button" disabled={busy || selectingWorkspace} onClick={() => void handleOpenExistingProject()}>
+                        <i className="ti ti-folder-open" aria-hidden="true" /> {selectingWorkspace ? "Открываю…" : "Открыть папку"}
+                      </button>
                       <button type="button" onClick={() => setScreen("topology")}>
                         <i className="ti ti-sitemap" aria-hidden="true" /> Выбрать тип команды
                       </button>
+                      <div className="future-workbench-card">
+                        <b><i className="ti ti-browser" aria-hidden="true" /> Будущий «Верстак»</b>
+                        <p>Встроенный браузер, чат и DevTools: показываете агентам, где править интерфейс, а команда видит страницу, консоль и DOM.</p>
+                      </div>
                     </>
                   )}
                 </div>
