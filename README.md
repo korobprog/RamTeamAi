@@ -154,9 +154,9 @@ Planning Mode показывает сессии, реплики агентов, 
 
 Для облачной синхронизации настроек скопируйте `.env.example` в `.env.local` и заполните `VITE_GITHUB_CLIENT_ID` и `VITE_FIREBASE_*`.
 
-Для публичных релизов из GitHub Actions эти же `VITE_*` значения должны быть добавлены
-в repository secrets и переданы в `.github/workflows/release.yml`, потому что Vite
-встраивает их во время `npm run build`, а не при запуске установленного приложения.
+For public GitHub Actions releases, `VITE_GITHUB_CLIENT_ID` must be added to repository secrets
+and passed through `.github/workflows/release.yml`. Firebase `VITE_FIREBASE_*` values are optional:
+if they are missing, release builds continue and cloud sync stays disabled until Firebase is configured.
 
 Синхронизация отправляет только настройки, агентов, провайдеры без ключей и GitHub-связи проектов. Диалоги, API-ключи и GitHub token не отправляются. Подробнее: [`docs/firebase-sync.md`](docs/firebase-sync.md).
 

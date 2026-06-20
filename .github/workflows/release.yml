@@ -57,17 +57,22 @@ jobs:
           VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
           VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
         run: |
-          $required = @(
-            "VITE_GITHUB_CLIENT_ID",
+          $required = @("VITE_GITHUB_CLIENT_ID")
+          $missingRequired = $required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
+          if ($missingRequired.Count -gt 0) {
+            throw "Missing release build secrets: $($missingRequired -join ', '). Add them in GitHub repository Settings -> Secrets and variables -> Actions -> Repository secrets."
+          }
+
+          $optionalFirebase = @(
             "VITE_FIREBASE_API_KEY",
             "VITE_FIREBASE_AUTH_DOMAIN",
             "VITE_FIREBASE_PROJECT_ID",
             "VITE_FIREBASE_APP_ID",
             "VITE_FIREBASE_MESSAGING_SENDER_ID"
           )
-          $missing = $required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
-          if ($missing.Count -gt 0) {
-            throw "Missing release build secrets: $($missing -join ', '). Add them in GitHub repository Settings -> Secrets and variables -> Actions -> Repository secrets."
+          $missingOptional = $optionalFirebase | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
+          if ($missingOptional.Count -gt 0) {
+            Write-Warning "Firebase sync secrets are not configured for this release build: $($missingOptional -join ', '). The desktop app will build, but cloud sync stays disabled until these VITE_FIREBASE_* values are added."
           }
 
       - name: Build and publish Tauri bundles
