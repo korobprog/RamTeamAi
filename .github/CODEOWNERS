@@ -1,4 +1,5 @@
-﻿# Donation wallets and the guard itself can be changed only by the repository owner.
+# Donation wallets, referral links, and the guard itself can be changed only by the repository owner.
 /src/config/donationWallets.ts @korobprog
+/src/config/neurogateReferral.ts @korobprog
 /.github/CODEOWNERS @korobprog
 /.github/workflows/protect-donation-wallets.yml @korobprog

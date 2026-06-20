@@ -77,6 +77,11 @@ h2 { font-size: 16px; font-weight: 500; }
 code, pre, .tree-view, .file-list { font-family: var(--font-mono); }
 .provider-main code { font-size: 11px; color: var(--color-text-tertiary); }
 .provider-settings { display: block; margin-top: 3px; color: var(--color-text-tertiary); font-size: 11px; }
+.provider-promo { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 8px 10px; border: 0.5px solid var(--color-border-info); border-radius: var(--border-radius-md); background: color-mix(in srgb, var(--color-background-info) 64%, var(--color-background-primary)); }
+.provider-promo span { min-width: 0; display: grid; gap: 2px; }
+.provider-promo b { color: var(--color-text-info); font-size: 12px; }
+.provider-promo small { color: var(--color-text-secondary); line-height: 1.35; }
+.provider-promo button { flex: 0 0 auto; white-space: nowrap; }
 .provider-key-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .provider-key-row input { max-width: 320px; }
 .provider-edit-panel { margin-top: 10px; padding: 10px; border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); background: var(--color-background-primary); }
@@ -552,6 +557,7 @@ label input, label select, label textarea, .textarea-label textarea { display: b
   .titlebar-right { margin-left: 0; }
   .titlebar-status { margin-left: 0; }
   .provider-meta { flex-wrap: wrap; }
+  .provider-promo { align-items: stretch; flex-direction: column; }
   .sidebar-panel, .conversation-panel, .right-panel, .composer { grid-column: 1; grid-row: auto; }
   .composer { grid-column: 1; grid-template-columns: 1fr; }
   .composer-limit-summary { grid-template-columns: 1fr 28px; }

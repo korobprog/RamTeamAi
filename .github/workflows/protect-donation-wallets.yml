@@ -1,4 +1,4 @@
-﻿name: Protect donation wallets
+name: Protect owner-managed links
 
 on:
   pull_request:
@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "src/config/donationWallets.ts"
+      - "src/config/neurogateReferral.ts"
       - ".github/CODEOWNERS"
       - ".github/workflows/protect-donation-wallets.yml"
 
@@ -13,16 +14,23 @@ permissions:
   contents: read
 
 jobs:
-  protect-donation-wallets:
-    name: Donation wallet ownership guard
+  protect-owner-managed-links:
+    name: Owner-managed link guard
     runs-on: ubuntu-latest
     steps:
-      - name: Block non-owner wallet edits
+      - name: Checkout protected files
+        uses: actions/checkout@v4
+
+      - name: Verify Neurogate referral URL
+        run: |
+          grep -F 'export const NEUROGATE_INVITE_URL = "https://portal.neurogate.space/invite?ref=Rerl3hyx81kZ3IRE";' src/config/neurogateReferral.ts
+
+      - name: Block non-owner protected edits
         if: ${{ github.actor != 'korobprog' }}
         run: |
-          echo "::error::Donation wallet files are protected. Ask @korobprog to review and apply wallet changes."
+          echo "::error::Donation wallets and Neurogate referral links are protected. Ask @korobprog to review and apply these changes."
           exit 1
 
-      - name: Owner wallet edit allowed
+      - name: Owner protected edit allowed
         if: ${{ github.actor == 'korobprog' }}
-        run: echo "Donation wallet edit was opened by the repository owner."
+        run: echo "Protected owner-managed edit was opened by the repository owner."

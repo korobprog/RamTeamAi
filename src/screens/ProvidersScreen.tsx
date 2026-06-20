@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Chip, SectionTitle } from "../components/FRamTeamAie";
 import { ProviderMonitor } from "../components/ProviderMonitor";
+import { NEUROGATE_INVITE_URL, NEUROGATE_PROMO_CREDIT, NEUROGATE_PROVIDER_ID } from "../config/neurogateReferral";
 import { useAppStore } from "../store/appStore";
 import type { ProviderConfig, ProviderKind } from "../types";
 import type { ProviderTestResult } from "../providers";
@@ -32,6 +34,9 @@ const L = {
   cancel: "\u041e\u0442\u043c\u0435\u043d\u0430",
   keyPlaceholder: "\u0412\u0441\u0442\u0430\u0432\u044c API key",
   testing: "\u041f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u043c...",
+  neurogatePromoTitle: "\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u0435 Neurogate API",
+  neurogatePromoText: "\u041f\u0435\u0440\u0435\u0439\u0434\u0438\u0442\u0435 \u0432 Neurogate, \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u0435 {credit} \u043d\u0430 \u043f\u0435\u0440\u0432\u043e\u0435 \u043f\u043e\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435, \u0437\u0430\u0442\u0435\u043c \u0432\u0441\u0442\u0430\u0432\u044c\u0442\u0435 API key \u0432 \u044d\u0442\u043e\u0439 \u043a\u0430\u0440\u0442\u043e\u0447\u043a\u0435.",
+  neurogatePromoButton: "\u041f\u043e\u043b\u0443\u0447\u0438\u0442\u044c {credit}",
   secretNote: "\u0421\u0435\u043a\u0440\u0435\u0442\u044b \u0441\u043e\u0445\u0440\u0430\u043d\u044f\u044e\u0442\u0441\u044f \u0432 OS keychain; \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u043f\u0440\u043e\u0432\u0430\u0439\u0434\u0435\u0440\u043e\u0432 \u0441\u043e\u0445\u0440\u0430\u043d\u044f\u044e\u0442\u0441\u044f \u043b\u043e\u043a\u0430\u043b\u044c\u043d\u043e.",
 };
 
@@ -119,6 +124,14 @@ export function ProvidersScreen() {
     setDraftProvider((current) => current ? { ...current, ...patch } : current);
   }
 
+  async function openNeurogateInvite() {
+    try {
+      await openUrl(NEUROGATE_INVITE_URL);
+    } catch {
+      window.open(NEUROGATE_INVITE_URL, "_blank", "noopener,noreferrer");
+    }
+  }
+
   return (
     <div className="screen-stack">
       <div className="toolbar">
@@ -140,6 +153,18 @@ export function ProvidersScreen() {
                 <div className="provider-name">{provider.name}</div>
                 <code>{provider.maskedKey ?? provider.baseUrl}</code>
                 <small className="provider-settings">{authLabel(provider.auth)}{" / "}{provider.stream.toUpperCase()}{" / "}{provider.baseUrl}</small>
+
+                {provider.id === NEUROGATE_PROVIDER_ID ? (
+                  <div className="provider-promo">
+                    <span>
+                      <b>{L.neurogatePromoTitle}</b>
+                      <small>{L.neurogatePromoText.replace("{credit}", NEUROGATE_PROMO_CREDIT)}</small>
+                    </span>
+                    <button className="primary" type="button" onClick={() => void openNeurogateInvite()}>
+                      {L.neurogatePromoButton.replace("{credit}", NEUROGATE_PROMO_CREDIT)}
+                    </button>
+                  </div>
+                ) : null}
 
                 {isSettingsOpen ? (
                   <div className="provider-edit-panel">
