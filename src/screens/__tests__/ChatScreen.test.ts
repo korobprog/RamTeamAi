@@ -71,6 +71,7 @@ function setChatState(patch: Partial<Record<string, unknown>> = {}) {
     workspacePath: "mem://workspace",
     selectWorkspaceFolder: vi.fn(),
     openExistingWorkspaceProject: vi.fn(),
+    confirmWorkspaceAccess: vi.fn(),
     clearWorkspaceFolder: vi.fn(),
     initWorkspace: vi.fn(),
     lastWorkspaceInit: undefined,

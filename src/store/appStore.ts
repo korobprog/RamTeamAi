@@ -1196,6 +1196,64 @@ function existingWorkspaceQuestion(rootPath: string): string {
   ].join("\n");
 }
 
+function quoteMcpCommandArg(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+}
+
+function filesystemMcpCommand(rootPath: string): string {
+  return "npx -y @modelcontextprotocol/server-filesystem@2025.12.18 " + quoteMcpCommandArg(rootPath);
+}
+
+function configureFilesystemMcpServer(servers: McpServerConfig[], rootPath: string, patch: Partial<McpServerConfig> = {}): McpServerConfig[] {
+  const existing = servers.find((server) => server.id === "filesystem");
+  const configured: McpServerConfig = {
+    id: "filesystem",
+    name: "Filesystem sandbox",
+    transport: "stdio",
+    commandOrUrl: filesystemMcpCommand(rootPath),
+    enabled: true,
+    tools: existing?.tools ?? [],
+    status: existing?.status ?? "not-configured",
+    latencyMs: existing?.latencyMs,
+    lastError: existing?.lastError,
+    ...patch,
+  };
+
+  return servers.some((server) => server.id === "filesystem")
+    ? servers.map((server) => (server.id === "filesystem" ? configured : server))
+    : [...servers, configured];
+}
+
+async function testConfiguredFilesystemMcp(server: McpServerConfig): Promise<Partial<McpServerConfig>> {
+  try {
+    const result = await testMcpConnection(server);
+    return {
+      enabled: result.ok ? true : server.enabled,
+      status: result.ok ? "connected" : "warning",
+      latencyMs: result.latencyMs,
+      lastError: result.ok ? undefined : result.message,
+      tools: result.ok ? result.tools.map((tool) => tool.name) : server.tools,
+    };
+  } catch (error) {
+    return {
+      status: "warning",
+      lastError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function workspaceAccessMessage(result: WorkspaceInitResult, mcpServer: McpServerConfig): string {
+  const mcpLine = mcpServer.status === "connected"
+    ? "Filesystem MCP подключён к этой папке: агенты могут использовать инструменты чтения файлов."
+    : "Папка выбрана, но Filesystem MCP ещё не подтвердился: агенты всё равно смогут читать снимок проекта через доступ приложения. Ошибка MCP: " + (mcpServer.lastError ?? "нет данных");
+  return [
+    "🔐 Доступ к рабочей папке подтверждён: " + result.rootPath,
+    result.message,
+    mcpLine,
+    "Если Windows или браузер снова спросит разрешение, выберите эту же папку и подтвердите чтение/запись.",
+  ].join("\n");
+}
+
 interface AppState {
   screen: ScreenId;
   account: UserAccountState;
@@ -1270,6 +1328,7 @@ interface AppState {
   updateArtifact: (patch: Partial<PlanArtifact>) => void;
   selectWorkspaceFolder: () => Promise<string | undefined>;
   openExistingWorkspaceProject: () => Promise<WorkspaceInitResult | undefined>;
+  confirmWorkspaceAccess: () => Promise<WorkspaceInitResult | undefined>;
   clearWorkspaceFolder: () => void;
   initWorkspace: (announce?: boolean) => Promise<WorkspaceInitResult | undefined>;
   requestBuild: (confirmed: boolean) => Promise<void>;
@@ -2060,6 +2119,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProjectId = get().activeProjectId;
       mcpServers = get().mcpServers;
       appSettings = get().appSettings;
+    }
+
+    if (!workspaceSnapshot && shouldAttachWorkspaceSnapshot(trimmedPrompt, mode) && get().workspacePath) {
+      workspaceSnapshot = await buildWorkspaceSnapshot(get().workspacePath!);
+      if (!workspaceSnapshot && mode === "planning") {
+        const warningSession = withSystemMessage(
+          get().session,
+          "Не удалось прочитать файлы рабочей папки для контекста. Нажмите «Подтвердить доступ» в блоке Workspace и выберите эту же папку, затем повторите запрос.",
+        );
+        const warningSessions = replaceSession(get().sessions, warningSession);
+        persistSessions(warningSessions);
+        set({ session: warningSession, sessions: warningSessions });
+        session = warningSession;
+        sessions = warningSessions;
+      }
     }
 
     const now = new Date().toISOString();
@@ -2904,6 +2978,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const result = await initWorkspaceFiles(selected);
       const discoveredFiles = await listWorkspaceFiles(result.rootPath).catch(() => result.files);
+      const initialMcpServers = configureFilesystemMcpServer(get().mcpServers, result.rootPath, { status: "not-configured", lastError: undefined });
+      const filesystemServer = initialMcpServers.find((server) => server.id === "filesystem");
+      const filesystemPatch = filesystemServer ? await testConfiguredFilesystemMcp(filesystemServer) : {};
+      const configuredMcpServers = configureFilesystemMcpServer(initialMcpServers, result.rootPath, filesystemPatch);
       set((state) => {
         const project = createProjectConfig(
           state.projects.length,
@@ -2920,10 +2998,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         persistProjects(projects);
         persistSessions(sessions);
         persistActiveIds(project.id, session.id);
+        persistMcpServers(configuredMcpServers);
         return {
           busy: false,
           workspacePath: result.rootPath,
           lastWorkspaceInit: result,
+          mcpServers: configuredMcpServers,
           projects,
           sessions,
           activeProjectId: project.id,
@@ -2934,6 +3014,46 @@ export const useAppStore = create<AppState>((set, get) => ({
           lastBuild: undefined,
           lastRunFilesWritten: undefined,
           screen: "chat",
+        };
+      });
+      persistWorkspacePath(result.rootPath);
+      return result;
+    } catch (error) {
+      set({ busy: false });
+      throw error;
+    }
+  },
+  confirmWorkspaceAccess: async () => {
+    if (get().busy) return undefined;
+
+    const selected = await pickWorkspaceFolder(get().workspacePath);
+    if (!selected) return undefined;
+
+    persistWorkspacePath(selected);
+    set({ workspacePath: selected, busy: true });
+
+    try {
+      const result = await initWorkspaceFiles(selected);
+      const initialMcpServers = configureFilesystemMcpServer(get().mcpServers, result.rootPath, { status: "not-configured", lastError: undefined });
+      const filesystemServer = initialMcpServers.find((server) => server.id === "filesystem");
+      const filesystemPatch = filesystemServer ? await testConfiguredFilesystemMcp(filesystemServer) : {};
+      const mcpServers = configureFilesystemMcpServer(initialMcpServers, result.rootPath, filesystemPatch);
+      const configuredServer = mcpServers.find((server) => server.id === "filesystem") ?? initialMcpServers[0];
+
+      set((state) => {
+        const session = state.activeSessionId
+          ? withSystemMessage(state.session, workspaceAccessMessage(result, configuredServer))
+          : state.session;
+        const sessions = state.activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
+        persistMcpServers(mcpServers);
+        if (state.activeSessionId) persistSessions(sessions);
+        return {
+          busy: false,
+          workspacePath: result.rootPath,
+          lastWorkspaceInit: result,
+          mcpServers,
+          session,
+          sessions,
         };
       });
       persistWorkspacePath(result.rootPath);

@@ -236,6 +236,7 @@ export function ChatScreen() {
   const workspacePath = useAppStore((state) => state.workspacePath);
   const selectWorkspaceFolder = useAppStore((state) => state.selectWorkspaceFolder);
   const openExistingWorkspaceProject = useAppStore((state) => state.openExistingWorkspaceProject);
+  const confirmWorkspaceAccess = useAppStore((state) => state.confirmWorkspaceAccess);
   const clearWorkspaceFolder = useAppStore((state) => state.clearWorkspaceFolder);
   const initWorkspace = useAppStore((state) => state.initWorkspace);
   const lastWorkspaceInit = useAppStore((state) => state.lastWorkspaceInit);
@@ -363,6 +364,16 @@ export function ChatScreen() {
     try {
       const result = await openExistingWorkspaceProject();
       if (result) openChatView();
+    } finally {
+      setSelectingWorkspace(false);
+    }
+  }
+
+  async function handleConfirmWorkspaceAccess() {
+    if (busy) return;
+    setSelectingWorkspace(true);
+    try {
+      await confirmWorkspaceAccess();
     } finally {
       setSelectingWorkspace(false);
     }
@@ -924,6 +935,7 @@ export function ChatScreen() {
         <p className="small-muted workspace-path" title={workspacePath}>{workspacePath ?? "Папка не выбрана"}</p>
         <div className="tool-list">
           <button className="chip-button" type="button" disabled={selectingWorkspace} onClick={() => void handleSelectWorkspace()}>{selectingWorkspace ? "Выбираем..." : workspacePath ? "Сменить папку" : "Выбрать папку"}</button>
+          {workspacePath ? <button className="chip-button on" type="button" disabled={busy || selectingWorkspace} onClick={() => void handleConfirmWorkspaceAccess()}>{selectingWorkspace ? "Ждём доступ..." : "Подтвердить доступ"}</button> : null}
           {workspacePath ? <button className="chip-button" type="button" disabled={busy} onClick={clearWorkspaceFolder}>Сброс</button> : null}
           <button className="chip-button on" type="button" disabled={busy} onClick={() => void initWorkspace(true)}>init</button>
         </div>
