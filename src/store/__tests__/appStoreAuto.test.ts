@@ -126,7 +126,16 @@ vi.mock("../../providers", () => ({
       text: [
         "Файл: package.json",
         "```json",
-        JSON.stringify({ dependencies: { react: "latest", "react-dom": "latest", "lucide-react": "latest", tailwindcss: "latest" }, devDependencies: { vite: "latest", typescript: "latest" } }, null, 2),
+        JSON.stringify({
+          scripts: { dev: "vite", build: "tsc && vite build", test: "vitest run" },
+          dependencies: { react: "latest", "react-dom": "latest", "lucide-react": "latest", tailwindcss: "latest" },
+          devDependencies: {
+            vite: "latest",
+            typescript: "latest",
+            vitest: "latest",
+            "@testing-library/react": "latest",
+          },
+        }, null, 2),
         "```",
         "",
         "Файл: src/App.tsx",
@@ -141,6 +150,20 @@ vi.mock("../../providers", () => ({
         "```css",
         "@import \"tailwindcss\";",
         ".hero { min-height: 100vh; }",
+        "```",
+        "",
+        "Файл: tests/App.test.tsx",
+        "```tsx",
+        "import { render, screen } from \"@testing-library/react\";",
+        "import { describe, expect, it } from \"vitest\";",
+        "import App from \"../src/App\";",
+        "",
+        "describe(\"App\", () => {",
+        "  it(\"renders the premium landing\", () => {",
+        "    render(<App />);",
+        "    expect(screen.getByText(/Premium landing finished/)).toBeTruthy();",
+        "  });",
+        "});",
         "```",
       ].join("\n"),
       latencyMs: 1,
@@ -187,6 +210,7 @@ describe("appStore auto implementation integration", () => {
     expect(state.implementationChecklist.every((item) => item.done)).toBe(true);
     expect(harness.files.get("src/index.css")).toContain("tailwindcss");
     expect(harness.files.get("src/App.tsx")).toContain("lucide-react");
+    expect(harness.files.get("tests/App.test.tsx")).toContain("@testing-library/react");
   });
 
   it("continues automatically after a manual implementation start when auto mode is enabled", async () => {
@@ -218,5 +242,35 @@ describe("appStore auto implementation integration", () => {
     expect(state.autoRunning).toBe(false);
     expect(state.artifact.status).toBe("built");
     expect(state.implementationChecklist.every((item) => item.done)).toBe(true);
+  });
+
+  it("persists the selected session decision artifact and restores it after reload", async () => {
+    const { useAppStore } = await import("../appStore");
+    const activeSessionId = useAppStore.getState().activeSessionId;
+
+    useAppStore.getState().updateArtifact({
+      title: "Custom persisted decision",
+      stack: ["React", "Vitest"],
+      steps: ["Build the persisted app shell", "Add app-specific QA checks"],
+      projectTree: "src/App.tsx\ntests/App.test.tsx",
+      status: "approved",
+    });
+
+    const savedSessions = JSON.parse(window.localStorage.getItem("RamTeamAi.sessions.v1") ?? "[]") as Array<{
+      id: string;
+      artifact?: { steps?: string[]; stack?: string[] };
+      implementationChecklist?: unknown[];
+    }>;
+    const savedActiveSession = savedSessions.find((session) => session.id === activeSessionId);
+    expect(savedActiveSession?.artifact?.steps).toEqual(["Build the persisted app shell", "Add app-specific QA checks"]);
+    expect(savedActiveSession?.implementationChecklist).toHaveLength(2);
+
+    vi.resetModules();
+    const { useAppStore: restoredStore } = await import("../appStore");
+    const restored = restoredStore.getState();
+    expect(restored.activeSessionId).toBe(activeSessionId);
+    expect(restored.artifact.steps).toEqual(["Build the persisted app shell", "Add app-specific QA checks"]);
+    expect(restored.artifact.stack).toEqual(["React", "Vitest"]);
+    expect(restored.implementationChecklist).toHaveLength(2);
   });
 });

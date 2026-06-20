@@ -1,5 +1,5 @@
 ﻿import { describe, expect, it } from "vitest";
-import { planImplementationAssignments, TAURI_REACT_REQUIRED_FILES, validateProjectCompleteness } from "../index";
+import { planImplementationAssignments, renderImplementationPlan, TAURI_REACT_REQUIRED_FILES, validateProjectCompleteness } from "../index";
 import type { AgentConfig, PlanArtifact } from "../../types";
 
 const artifact: PlanArtifact = {
@@ -32,6 +32,43 @@ describe("projectBuilder assignments", () => {
     expect(assignments.map((item) => item.role)).toEqual(["coder", "coder"]);
     expect(new Set(assignments.map((item) => item.id)).size).toBe(2);
     expect(assignments.map((item) => item.id)).toEqual(["coder-a", "coder-b"]);
+  });
+
+  it("describes tester agents as final QA with browser/MCP checks", () => {
+    const tester: AgentConfig = {
+      ...agent("tester"),
+      name: "Тестировщик",
+      role: "tester",
+      tools: ["files", "mcp"],
+    };
+
+    const [assignment] = planImplementationAssignments(artifact, [tester]);
+
+    expect(assignment.summary).toContain("Browser/Playwright MCP");
+    expect(assignment.deliverables.join(" ")).toContain("Stack-matched automated test files");
+    expect(assignment.deliverables.join(" ")).toContain("Демо-аккаунт");
+    expect(assignment.deliverables.join(" ")).toContain("Чеклист ошибок");
+  });
+
+  it("renders a self-managed agent checklist and QA-created 3-step scenario", () => {
+    const architect: AgentConfig = {
+      ...agent("architect"),
+      name: "Архитектор",
+      role: "architect",
+    };
+    const tester: AgentConfig = {
+      ...agent("tester"),
+      name: "Тестировщик",
+      role: "tester",
+      tools: ["files", "mcp"],
+    };
+    const assignments = planImplementationAssignments(artifact, [architect, agent("coder"), tester]);
+    const plan = renderImplementationPlan(artifact, assignments);
+
+    expect(plan).toContain("Самоуправляемый чеклист агентов");
+    expect(plan).toContain("Главный агент: Архитектор (architect)");
+    expect(plan).toContain("Тестовый 3-step сценарий QA-агента");
+    expect(plan).toContain("QA-агент создаёт и поддерживает этот раздел сам");
   });
 });
 

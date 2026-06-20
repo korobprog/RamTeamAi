@@ -1,0 +1,28 @@
+﻿name: Protect donation wallets
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/config/donationWallets.ts"
+      - ".github/CODEOWNERS"
+      - ".github/workflows/protect-donation-wallets.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  protect-donation-wallets:
+    name: Donation wallet ownership guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Block non-owner wallet edits
+        if: ${{ github.actor != 'korobprog' }}
+        run: |
+          echo "::error::Donation wallet files are protected. Ask @korobprog to review and apply wallet changes."
+          exit 1
+
+      - name: Owner wallet edit allowed
+        if: ${{ github.actor == 'korobprog' }}
+        run: echo "Donation wallet edit was opened by the repository owner."

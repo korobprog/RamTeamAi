@@ -48,6 +48,7 @@ function setChatState(patch: Partial<Record<string, unknown>> = {}) {
     startAgentImplementation: vi.fn(),
     enqueueAgentQuestion: vi.fn(),
     clearQueuedAgentQuestion: vi.fn(),
+    runAgentDialogQuestion: vi.fn(),
     appSettings: { autoMode: true, operatorDefaultAgentId: "coder" },
     setAppSettings: vi.fn(),
     autoRunning: false,
@@ -104,6 +105,15 @@ describe("ChatScreen auto implementation CTA", () => {
 
     expect(html).not.toContain("Продолжить реализацию");
     expect(html).not.toContain("Реализация идёт");
+  });
+
+  it("switches the composer to main-agent Q&A when the project is built", async () => {
+    const html = await renderChatScreen();
+
+    expect(html).toContain("Вопрос по готовому проекту");
+    expect(html).toContain("Отвечает главный");
+    expect(html).toContain("Спросите о готовом проекте");
+    expect(html).toContain("Спросить");
   });
 
   it("does not render a manual continue CTA while auto mode is enabled and checklist is still partial", async () => {

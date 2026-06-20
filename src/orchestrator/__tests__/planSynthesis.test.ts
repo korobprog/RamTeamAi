@@ -38,6 +38,37 @@ describe("synthesizePlan", () => {
     expect(plan.steps).toEqual([
       "Создать/открыть Vite React TypeScript проект и заменить `src/App.tsx` на код лендинга",
       "Подключить Tailwind и `lucide-react`",
+      "Create stack-matched automated tests in package.json and tests/App.test.tsx (Vitest + React Testing Library) and make npm test runnable",
+    ]);
+  });
+
+  it("adds a stack-matched automated testing step to fallback plans", () => {
+    const plan = synthesizePlan([
+      message("user", "Нужен desktop app на Tauri React TypeScript"),
+      message("coder", "Сделаю рабочую реализацию без отдельного списка шагов."),
+    ], baseArtifact);
+
+    expect(plan.stack).toEqual(expect.arrayContaining(["Tauri", "React", "TypeScript"]));
+    expect(plan.steps.at(-1)).toBe(
+      "Create stack-matched automated tests in package.json and tests/App.test.tsx (Vitest + React Testing Library) and make npm test runnable",
+    );
+  });
+
+  it("drops package-manager command-only bullets from explicit implementation steps", () => {
+    const plan = synthesizePlan([
+      message("user", "Сделай лендинг RamTeamAi на Vite React TypeScript"),
+      message("architect", [
+        "## Implementation",
+        "1. Создать `src/App.tsx` и `src/index.css` для лендинга",
+        "2. Run `npm install && npm run dev`, check browser, then run `npm run build`",
+        "3. Перейти в `ramteamai-landing` и выполнить `npm install`",
+        "4. Create stack-matched automated tests in package.json and tests/App.test.tsx (Vitest + React Testing Library) and make npm test runnable",
+      ].join("\n")),
+    ], baseArtifact);
+
+    expect(plan.steps).toEqual([
+      "Создать `src/App.tsx` и `src/index.css` для лендинга",
+      "Create stack-matched automated tests in package.json and tests/App.test.tsx (Vitest + React Testing Library) and make npm test runnable",
     ]);
   });
 });

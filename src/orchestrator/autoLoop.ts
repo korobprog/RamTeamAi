@@ -20,38 +20,43 @@ export function decideAutoRound(input: AutoRoundDecisionInput): AutoRoundDecisio
   if (!input.autoMode) return { action: "stop", reason: "auto-off" };
   if (input.busy) return { action: "stop", reason: "busy" };
   if (checklistComplete(input.checklist)) return { action: "stop", reason: "complete" };
-  if (input.stalledRounds >= 3) return { action: "stop", reason: "stalled" };
   if (input.round >= input.cap) return { action: "stop", reason: "limit" };
+  // Do not stop just because three previous rounds were "quiet". A model can
+  // return prose, hit a provider fallback, or be replaced by the supervisor and
+  // still recover on the next pass. Keep handing the remaining checklist back to
+  // the agents until the checklist is complete or the configured safety cap is
+  // reached.
   return { action: "run" };
 }
 
-export function nextStalledRounds(previous: ChecklistItem[], next: ChecklistItem[], _filesWritten: number | undefined, currentStalled: number): number {
+export function nextStalledRounds(previous: ChecklistItem[], next: ChecklistItem[], filesWritten: number | undefined, currentStalled: number): number {
   const advanced = checklistProgress(next).done > checklistProgress(previous).done;
-  // File rewrites alone are not proof of progress: a stuck agent can keep
-  // replacing the same file forever. The loop only resets when verification
-  // closes at least one more checklist item.
-  return advanced ? 0 : currentStalled + 1;
+  const wroteFiles = Boolean(filesWritten && filesWritten > 0);
+  // A round is stalled only when it neither writes files nor closes checklist
+  // items. If agents are still producing files, keep going until verification
+  // catches up or the user's round cap is reached.
+  return advanced || wroteFiles ? 0 : currentStalled + 1;
 }
 
 export function buildAutoImplementationSummary(checklist: ChecklistItem[], reason: AutoStopReason, cap: number): string {
   const progress = checklistProgress(checklist);
   const complete = checklistComplete(checklist);
   if (complete) {
-    return `✅ Готово: выполнены все ${progress.total} пунктов плана. Реализация завершена автоматически.`;
+    return `✅ Готово: выполнены все ${progress.total} пунктов плана. Финальная проверка пройдена, можно уведомить пользователя о готовности.`;
   }
 
   const remaining = checklist.filter((item) => !item.done).map((item) => "• " + item.step);
   const stopReasonText = reason === "limit"
-    ? `\nПричина: достигнут лимит ${cap} раундов реализации. Увеличьте лимит в настройках или уточните оставшиеся пункты.`
+    ? `\nПричина: достигнут лимит ${cap} раундов реализации. Оставшиеся пункты уже возвращены агентам как чеклист правок; увеличьте лимит в настройках или уточните задачу.`
     : reason === "stalled"
-      ? "\nПричина: три раунда подряд не дали новых файлов и не продвинули чеклист."
+      ? "\nПричина: повторные раунды не записали файлов и не продвинули чеклист."
       : reason === "auto-off"
         ? "\nПричина: авто-режим был выключен."
         : reason === "busy"
           ? "\nПричина: уже запущена другая операция."
           : "";
 
-  return `⏸️ Остановлено: выполнено ${progress.done} из ${progress.total} пунктов.${stopReasonText}${remaining.length ? "\nОсталось:\n" + remaining.join("\n") : ""}`;
+  return `⏸️ Остановлено: выполнено ${progress.done} из ${progress.total} пунктов. Чеклист ниже нужно вернуть агентам на правку, затем повторить тестовый этап.${stopReasonText}${remaining.length ? "\nОсталось:\n" + remaining.join("\n") : ""}`;
 }
 
 function readinessSatisfied(readinessStatus?: ProjectReadinessStatus): boolean {

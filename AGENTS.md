@@ -1,55 +1,183 @@
-﻿# Repository Guidelines
+# Repository Guidelines
 
-## Project Structure & Module Organization
+## Project Overview
 
-This repository is currently empty except for Git metadata. When adding code, keep the layout predictable:
+This is **RamTeamAi**, a desktop app built with **Tauri 2 + React + TypeScript + Vite + Vitest**.
 
-- `src/` for application source code and modules.
-- `tests/` for automated tests that mirror `src/` structure.
-- `assets/` for static files such as images, fixtures, or sample data.
-- `docs/` for design notes, setup guides, and architecture decisions.
-- Configuration files should live at the repository root when required.
+Agents must treat this as a real runnable product, not just a code-generation exercise. Do not mark work as done until the app has been checked from the terminal with the relevant commands below.
 
-Example: place code for `src/parser.py` tests in `tests/test_parser.py`, or `src/parser.ts` tests in `tests/parser.test.ts`.
+## Mandatory Terminal Discipline
+
+- Work from the repository root: `C:\Users\makst\Documents\RAM`.
+- This workspace is on Windows. Prefer PowerShell-compatible commands.
+  - Use `Get-ChildItem` instead of `ls -la`.
+  - Use `Get-ChildItem -Recurse -Filter <name>` instead of Unix `find`.
+  - Use `Remove-Item -LiteralPath ...` for deletion and verify paths before destructive operations.
+- Before editing, inspect the existing files and package scripts.
+- After editing, run the smallest relevant verification command first, then broader checks.
+- Never say "it should work" without showing which command was run and whether it passed.
+- If a command fails, read the full error output, fix the root cause, and rerun the command.
+- Do not leave long-running dev servers/processes running unless the user explicitly asks.
+
+## Project Structure
+
+- `src/` - React UI, state, providers, orchestration, MCP/project-builder frontend code.
+- `src-tauri/` - Rust/Tauri desktop backend, commands, config, keychain, persistence, native features.
+- `tests/` or colocated `*.test.ts` files - automated tests.
+- `assets/` - static assets and screenshots.
+- `docs/` - setup, release, and architecture documentation.
+- `scripts/` - Windows helper scripts for dev, release, versioning, and logging.
+- `dist/` - generated frontend build output; do not edit manually.
 
 ## Build, Test, and Development Commands
 
-No build system is configured yet. Add commands when the first language/toolchain is introduced, and document them in `README.md` and here.
+Run these from the repository root.
 
-Common examples:
+### Install dependencies
 
-- `npm install` — install JavaScript dependencies.
-- `npm test` — run the JavaScript test suite.
-- `python -m pytest` — run Python tests.
-- `make build` — run the project build if a `Makefile` is added.
+```powershell
+npm install
+```
 
-Prefer scripts that work from the repository root.
+### Type-check
 
-## Coding Style & Naming Conventions
+```powershell
+npm run check
+```
 
-Follow the conventions of the language introduced. Keep formatting automated where possible:
+### Test
 
-- Use consistent indentation: 2 spaces for JSON/YAML/Markdown, project-standard indentation for source files.
-- Use descriptive names: `user_service.py`, `UserService.ts`, `test_user_service.py`.
-- Keep modules focused and small; avoid mixing unrelated responsibilities.
-- Add formatters or linters such as Prettier, ESLint, Ruff, Black, or gofmt when applicable.
+```powershell
+npm test
+```
+
+### Frontend production build
+
+```powershell
+npm run build
+```
+
+### Frontend dev server
+
+```powershell
+npm run dev
+```
+
+Vite normally uses port `5173`. Tauri dev mode starts Vite on `127.0.0.1:1420` through `src-tauri/tauri.conf.json`.
+
+### Tauri desktop dev app
+
+```powershell
+npm run tauri:dev
+```
+
+This uses `scripts\tauri-dev.ps1`, which sets up Visual Studio Build Tools and Cargo paths before running Tauri.
+
+### Tauri dev with logs
+
+Use this when the desktop app does not start or exits immediately:
+
+```powershell
+npm run dev:logs
+```
+
+Then inspect the newest files under `logs\dev\`:
+
+```powershell
+Get-ChildItem .\logs\dev\ | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+Get-Content -Raw .\logs\dev\<latest>.err.log
+Get-Content -Raw .\logs\dev\<latest>.out.log
+```
+
+### Release/build checks
+
+```powershell
+npm run tauri:build
+npm run release:windows
+```
+
+Only run release commands when the task is specifically about packaging or release artifacts, because they can take longer and require the native toolchain.
+
+## Required Verification Before Finishing
+
+For most code changes, run:
+
+```powershell
+npm run check
+npm test
+npm run build
+```
+
+For changes under `src-tauri/`, `scripts/`, `src-tauri/tauri.conf.json`, updater config, permissions, or native features, also run or explicitly attempt:
+
+```powershell
+npm run tauri:dev
+```
+
+If Tauri cannot be launched in the current environment, run `npm run dev:logs`, inspect the logs, and report the blocker with exact file paths and error messages.
+
+## App-Launch Debugging Procedure
+
+When the user says the app does not launch:
+
+1. Run `npm run check`.
+2. Run `npm test`.
+3. Run `npm run build`.
+4. Run `npm run dev:logs` or `npm run tauri:dev`.
+5. Inspect:
+   - terminal output;
+   - latest `logs\dev\*.err.log` and `logs\dev\*.out.log`;
+   - old root logs such as `tauri-dev-run.err.log`, `tauri-dev-run.out.log`, `codex-runtime-vite.err.log`, and `codex-runtime-vite.out.log` if relevant.
+6. Fix the first real error, not just symptoms.
+7. Rerun the failing command.
+8. In the final response, include:
+   - what failed;
+   - what was changed;
+   - exact verification commands and results;
+   - remaining blockers, if any.
+
+## Coding Style
+
+- Follow the existing TypeScript/React/Rust style.
+- Keep modules focused and small.
+- Prefer explicit types at important boundaries.
+- Do not introduce new frameworks or state libraries without a clear reason.
+- Do not edit generated `dist/` files by hand.
+- Keep formatting consistent with the surrounding file.
 
 ## Testing Guidelines
 
-Add tests with each functional change. Test files should mirror the source layout and use clear names such as `test_<module>.py`, `<module>.test.ts`, or `<module>.spec.ts`.
+- Add or update tests for functional changes.
+- Use Vitest for TypeScript tests.
+- Tests should cover business logic, state transitions, provider adapters, command builders, and error handling.
+- If a bug is fixed, add a regression test when practical.
 
-Document any coverage targets once a test fRamTeamAiework is selected. Until then, prioritize meaningful unit tests for business logic and integration tests for external boundaries.
+## Documentation Guidelines
 
-## Commit & Pull Request Guidelines
+- Update `README.md`, `docs/`, or this file when commands, setup steps, release flow, or architecture change.
+- Keep instructions copy-pasteable on Windows.
+- If documentation mentions a port, script, or artifact path, verify it against the actual config.
 
-There is no existing commit history, so use concise, imperative commit messages, for example:
+## Library and API Documentation
 
-- `Add initial project structure`
-- `Implement parser validation`
-- `Fix configuration loading`
+When a task asks about a library, framework, SDK, API, CLI tool, or cloud service, use Context7 MCP first to fetch current documentation before answering or changing code. This applies even to common tools like React, Vite, Tauri, Firebase, Tailwind, and Vitest.
 
-Pull requests should include a short summary, test results, linked issues if applicable, and screenshots or logs for user-facing changes.
+Do not use Context7 for ordinary refactoring, business-logic debugging, or general programming concepts unless library/API behavior is the question.
 
-## Security & Configuration Tips
+## Security and Configuration
 
-Do not commit secrets, API keys, private certificates, or local environment files. Use `.env.example` for required configuration names and keep real values in ignored local files.
+- Do not commit secrets, API keys, tokens, private certificates, or local `.env` files.
+- Use `.env.example` for required variable names.
+- Keep real credentials in ignored local files or the OS keychain.
+- Do not print secrets in logs or final responses.
+
+## Definition of Done
+
+A task is done only when:
+
+- the requested code/docs change is complete;
+- relevant terminal checks were run;
+- failures were either fixed or clearly reported as blockers;
+- no unrelated files were modified;
+- the final response lists exact commands and outcomes.
+

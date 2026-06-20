@@ -1,4 +1,4 @@
-﻿import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { Chip, SectionTitle } from "../components/FRamTeamAie";
 import { planImplementationAssignments, previewProjectFiles } from "../projectBuilder";
 import { useAppStore } from "../store/appStore";
@@ -48,9 +48,20 @@ const text = {
   files: "\u0424\u0430\u0439\u043b\u044b",
 };
 
+type BuildStage = "scaffold" | "agents" | "verify";
+
+interface StageChecklistItem {
+  id: string;
+  label: string;
+  done: boolean;
+  note?: string;
+  planStepIndex?: number;
+}
+
 export function BuildScreen() {
   const [selectingWorkspace, setSelectingWorkspace] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [expandedStage, setExpandedStage] = useState<BuildStage>("scaffold");
   const artifact = useAppStore((state) => state.artifact);
   const agents = useAppStore((state) => state.agents);
   const updateArtifact = useAppStore((state) => state.updateArtifact);
@@ -90,14 +101,86 @@ export function BuildScreen() {
   const verifyStepClass = allChecklistDone
     ? "flow-step done implemented"
     : implementationAttempted ? "flow-step current verify" : "flow-step";
-  const decisionStepClass = implementationDone
-    ? "decision-step implemented"
-    : implementationRunning || implementationAttempted
-      ? "decision-step implementing"
-      : scaffoldReady
-        ? "decision-step done"
-        : "decision-step";
   const assignments = hasDecision ? planImplementationAssignments(artifact, agents) : [];
+  const scaffoldItems: StageChecklistItem[] = [
+    {
+      id: "scaffold-plan",
+      label: "План команды сформирован и готов к запуску",
+      done: hasDecision,
+    },
+    {
+      id: "scaffold-workspace",
+      label: "Рабочая папка выбрана или будет создана автоматически",
+      done: Boolean(workspacePath || lastBuild?.rootPath),
+    },
+    {
+      id: "scaffold-files",
+      label: "Каркас, README, PLAN.md и docs/agent-tasks.md записаны",
+      done: scaffoldReady,
+      note: lastBuild?.message,
+    },
+  ];
+  const agentItems: StageChecklistItem[] = decisionSteps.map((step, index) => ({
+    id: "agent-step-" + index,
+    label: step,
+    done: artifact.status === "built" || Boolean(effectiveChecklist[index]?.done),
+    note: effectiveChecklist[index]?.note,
+    planStepIndex: index,
+  }));
+  const testingPassed = implementationDone && !checklistPartial;
+  const testFailuresRouted = implementationAttempted && checklistPartial;
+  const verifyItems: StageChecklistItem[] = [
+    {
+      id: "verify-agent-checklist",
+      label: "QA-агент создал/обновил в docs/agent-tasks.md адаптивный тестовый 3-step сценарий под приложение",
+      done: implementationAttempted,
+    },
+    {
+      id: "verify-install-run",
+      label: "QA-агент подготовил окружение и запустил доступные команды dev/build/lint/test/check",
+      done: testingPassed,
+    },
+    {
+      id: "verify-browser",
+      label: "QA-агент проверил UI через Browser/Playwright MCP и DevTools, включая клики и основные сценарии",
+      done: testingPassed,
+    },
+    {
+      id: "verify-auth",
+      label: "Если есть авторизация — создать демо-аккаунт и пройти пользовательский путь",
+      done: testingPassed,
+    },
+    {
+      id: "verify-fix-loop",
+      label: "Если тесты не прошли — QA-агент вернул разработчикам чеклист ошибок на правку",
+      done: testingPassed || testFailuresRouted,
+      note: checklistPartial ? effectiveChecklist.filter((item) => !item.done).map((item) => item.step).join("; ") : undefined,
+    },
+    {
+      id: "verify-notify",
+      label: "Когда все проверки прошли — уведомить пользователя о готовности",
+      done: testingPassed,
+    },
+  ];
+  const stagePanels: Record<BuildStage, { title: string; description: string; items: StageChecklistItem[] }> = {
+    scaffold: {
+      title: "Каркас",
+      description: "Подготовка рабочей папки, базовых файлов и Markdown-плана для команды.",
+      items: scaffoldItems,
+    },
+    agents: {
+      title: "Агенты",
+      description: "Пункты реализации из согласованного плана. Каждый пункт закрывается отдельным чекбоксом.",
+      items: agentItems,
+    },
+    verify: {
+      title: "Проверка и тестирование",
+      description: "QA-бот, если он есть, сам создаёт app-specific 3-step QA-чеклист, добавляет нужные тесты/команды и возвращает ошибки агентам.",
+      items: verifyItems,
+    },
+  };
+  const expandedPanel = stagePanels[expandedStage];
+  const expandedDone = expandedPanel.items.filter((item) => item.done).length;
 
   function normalizePlanItems(items: string[]): string[] {
     return items.map((item) => item.trim()).filter(Boolean);
@@ -123,44 +206,76 @@ export function BuildScreen() {
     await startAgentImplementation();
   }
 
+  function renderStageButton(
+    key: BuildStage,
+    className: string,
+    marker: ReactNode,
+    title: string,
+    status: string,
+  ) {
+    return (
+      <button
+        className={`${className}${expandedStage === key ? " selected" : ""}`}
+        type="button"
+        aria-expanded={expandedStage === key}
+        aria-controls="stage-checklist-panel"
+        onClick={() => setExpandedStage(key)}
+      >
+        <span>{marker}</span>
+        <b>{title}</b>
+        <small>{status}</small>
+      </button>
+    );
+  }
+
   return (
     <div className="build-layout">
       <section className="build-main">
         <SectionTitle icon="clipboard-check" title={text.decidedTitle} subtitle={text.decidedSubtitle} />
 
         <div className="implementation-flow">
-          <div className={scaffoldStepClass}><span>1</span><b>{text.scaffold}</b><small>{scaffoldReady ? text.ready : text.needCreate}</small></div>
-          <div className={agentStepClass}><span>{implementationDone ? <i className="ti ti-check" aria-hidden="true" /> : "2"}</span><b>{text.agents}</b><small>{implementationDone ? text.done : implementationRunning ? text.agentsRunning : implementationAttempted ? text.needContinue : text.startImplementation}</small></div>
-          <div className={verifyStepClass}><span>{allChecklistDone ? <i className="ti ti-check" aria-hidden="true" /> : "3"}</span><b>{text.verify}</b><small>{checklistTotal ? `${checklistDone} ${"\u0438\u0437"} ${checklistTotal} ${text.done}` : implementationDone ? text.nextStage : text.chatFilesTests}</small></div>
+          {renderStageButton("scaffold", scaffoldStepClass, "1", text.scaffold, scaffoldReady ? text.ready : text.needCreate)}
+          {renderStageButton("agents", agentStepClass, implementationDone ? <i className="ti ti-check" aria-hidden="true" /> : "2", text.agents, implementationDone ? text.done : implementationRunning ? text.agentsRunning : implementationAttempted ? text.needContinue : text.startImplementation)}
+          {renderStageButton("verify", verifyStepClass, allChecklistDone ? <i className="ti ti-check" aria-hidden="true" /> : "3", text.verify, checklistTotal ? `${checklistDone} ${"\u0438\u0437"} ${checklistTotal} ${text.done}` : implementationDone ? text.nextStage : text.chatFilesTests)}
         </div>
 
         {!hasDecision ? (
           <div className="empty-decision-card"><b>{text.planEmptyTitle}</b><p>{text.planEmptyBody}</p></div>
         ) : null}
 
-        <div className="decision-steps">
-          {decisionSteps.map((step, index) => {
-            const stepDone = artifact.status === "built" || Boolean(effectiveChecklist[index]?.done);
-            return (
-              <div className={stepDone ? decisionStepClass + " implemented" : decisionStepClass} key={"step-" + index} title={effectiveChecklist[index]?.note}>
-                <span className="decision-step-num">{stepDone ? <i className="ti ti-check" aria-hidden="true" /> : index + 1}</span>
-                {editing ? (
+        <div className="stage-checklist-panel" id="stage-checklist-panel">
+          <div className="stage-checklist-head">
+            <div>
+              <b>{expandedPanel.title}</b>
+              <p>{expandedPanel.description}</p>
+            </div>
+            <small>{expandedDone} из {expandedPanel.items.length} готово</small>
+          </div>
+          <div className="stage-checklist">
+            {expandedPanel.items.length ? expandedPanel.items.map((item, index) => (
+              <div className={item.done ? "stage-check-item done" : "stage-check-item"} key={item.id} title={item.note}>
+                <input type="checkbox" checked={item.done} readOnly aria-label={item.label} />
+                {editing && expandedStage === "agents" && item.planStepIndex !== undefined ? (
                   <>
-                    <input value={step} onChange={(event) => {
+                    <input className="stage-check-edit" value={decisionSteps[item.planStepIndex]} onChange={(event) => {
                       const next = [...decisionSteps];
-                      next[index] = event.target.value;
+                      next[item.planStepIndex ?? index] = event.target.value;
                       updateArtifact({ steps: next });
                     }} />
-                    <button className="mini-action ghosty" type="button" aria-label={text.deleteStep} onClick={() => updateArtifact({ steps: decisionSteps.filter((_, itemIndex) => itemIndex !== index) })}>{"\u00d7"}</button>
+                    <button className="mini-action ghosty" type="button" aria-label={text.deleteStep} onClick={() => updateArtifact({ steps: decisionSteps.filter((_, itemIndex) => itemIndex !== item.planStepIndex) })}>{"\u00d7"}</button>
                   </>
-                ) : <span className="decision-step-text">{step}</span>}
+                ) : (
+                  <span className="stage-check-text">{item.label}</span>
+                )}
               </div>
-            );
-          })}
+            )) : (
+              <div className="stage-check-empty">Список появится после формирования плана.</div>
+            )}
+          </div>
         </div>
 
         <div className="decision-actions">
-          <button className="chip-button" type="button" disabled={!hasDecision && !editing} onClick={editing ? finishEditing : () => setEditing(true)}>{editing ? text.finish : text.editSteps}</button>
+          <button className="chip-button" type="button" disabled={!hasDecision && !editing} onClick={editing ? finishEditing : () => { setExpandedStage("agents"); setEditing(true); }}>{editing ? text.finish : text.editSteps}</button>
           {editing ? <button className="chip-button" type="button" onClick={() => updateArtifact({ steps: [...decisionSteps, text.newStep] })}>{text.addStep}</button> : null}
         </div>
 

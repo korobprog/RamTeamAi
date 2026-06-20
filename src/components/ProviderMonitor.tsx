@@ -29,7 +29,7 @@ function statusText(provider: ProviderConfig): string {
   if (health === "rate-limited") return "RATE LIMITED";
   if (health === "auth-error") return "AUTH ERROR";
   if (provider.status === "connected") return "online";
-  if (provider.status === "warning") return "online???";
+  if (provider.status === "warning") return "warning";
   return "no key";
 }
 
@@ -73,7 +73,7 @@ function ProviderMonitorCard({ provider, now, onRefresh }: { provider: ProviderC
       </div>
 
       {circuitOpen ? <small className="provider-monitor-empty">Circuit breaker open until {monitoring?.circuitOpenUntil}.</small> : null}
-      {monitoring?.lastError ? <small className="provider-monitor-empty">online??? online: {monitoring.lastError}</small> : null}
+      {monitoring?.lastError ? <small className="provider-monitor-empty">Последняя ошибка: {monitoring.lastError}</small> : null}
 
       {!hasActivity ? (
         <small className="provider-monitor-empty">Пока нет запросов — метрики появятся после реального обращения к API.</small>

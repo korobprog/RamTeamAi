@@ -5,18 +5,22 @@ import type { AgentConfig, AgentRunMode, TopologyKind } from "../types";
 export function implementationRank(agent: AgentConfig): number {
   let score = 0;
   if (agent.role === "coder") score += 100;
+  if (agent.role === "tester") score += 80;
   if (agent.tools.includes("project-builder")) score += 10;
   if (agent.tools.includes("files")) score += 5;
   return score;
 }
 
 function canProduceImplementation(agent: AgentConfig): boolean {
-  return agent.role === "coder" || agent.tools.includes("project-builder");
+  return agent.role === "coder" || agent.role === "tester" || agent.tools.includes("project-builder");
 }
 
 function implementationPool(agents: AgentConfig[]): AgentConfig[] {
   const coders = agents.filter((agent) => agent.role === "coder");
-  if (coders.length) return coders;
+  if (coders.length) {
+    const testers = agents.filter((agent) => agent.role === "tester");
+    return [...coders, ...testers];
+  }
 
   const builders = agents.filter(canProduceImplementation);
   if (builders.length) return builders;

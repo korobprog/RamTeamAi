@@ -52,8 +52,8 @@ describe("BuildScreen implementation checklist UI", () => {
 
     expect(html).toContain("Каркас");
     expect(html).toContain("нужно создать");
-    expect(html).toContain('<div class="flow-step"><span>1</span><b>Каркас</b>');
-    expect(html).not.toContain('<div class="flow-step done"><span>1</span><b>Каркас</b><small>нужно создать</small>');
+    expect(html).toContain('<button class="flow-step selected" type="button" aria-expanded="true" aria-controls="stage-checklist-panel"><span>1</span><b>Каркас</b>');
+    expect(html).not.toContain('<button class="flow-step done" type="button" aria-expanded="true" aria-controls="stage-checklist-panel"><span>1</span><b>Каркас</b><small>нужно создать</small>');
   });
 
   it("shows partial checklist progress and a continue action after an incomplete round", async () => {

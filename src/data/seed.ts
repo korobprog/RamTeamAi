@@ -55,12 +55,12 @@ export const providersSeed: ProviderConfig[] = [
   },
   {
     id: "ollama",
-    name: "Ollama В· Р»РѕРєР°Р»СЊРЅРѕ",
+    name: "Ollama · локально",
     kind: "ollama",
     baseUrl: "http://localhost:11434/api",
     auth: "none",
     stream: "jsonl",
-    maskedKey: "РєР»СЋС‡ РЅРµ РЅСѓР¶РµРЅ",
+    maskedKey: "ключ не нужен",
     status: "warning",
     capabilities: ctxLocal,
     models: [
@@ -142,12 +142,23 @@ export const agentsSeed: AgentConfig[] = [
     tools: ["files", "project-builder", "mcp"],
     status: "waiting",
   },
+  {
+    id: "tester",
+    name: "\u0422\u0435\u0441\u0442\u0438\u0440\u043e\u0432\u0449\u0438\u043a",
+    role: "tester",
+    providerId: "RamTeamAi",
+    modelId: "gpt-5.4-mini",
+    systemPrompt: "\u0422\u044b QA-\u0442\u0435\u0441\u0442\u0438\u0440\u043e\u0432\u0449\u0438\u043a. \u041d\u0430 \u0444\u0438\u043d\u0430\u043b\u044c\u043d\u043e\u043c \u044d\u0442\u0430\u043f\u0435 \u0443\u0441\u0442\u0430\u043d\u0430\u0432\u043b\u0438\u0432\u0430\u0439 \u043f\u0430\u043a\u0435\u0442\u044b, \u0437\u0430\u043f\u0443\u0441\u043a\u0430\u0439 \u043f\u0440\u043e\u0435\u043a\u0442, \u043f\u0440\u043e\u0433\u043e\u043d\u044f\u0439 build/lint/test/check, \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u0439 UI \u0447\u0435\u0440\u0435\u0437 Browser/Playwright MCP \u0438 DevTools. \u0415\u0441\u043b\u0438 \u0435\u0441\u0442\u044c \u0430\u0432\u0442\u043e\u0440\u0438\u0437\u0430\u0446\u0438\u044f, \u0441\u043e\u0437\u0434\u0430\u0432\u0430\u0439 \u0434\u0435\u043c\u043e-\u0430\u043a\u043a\u0430\u0443\u043d\u0442 \u0438 \u043f\u0440\u043e\u0445\u043e\u0434\u0438 \u0441\u0446\u0435\u043d\u0430\u0440\u0438\u0438. \u041f\u0440\u0438 \u043e\u0448\u0438\u0431\u043a\u0430\u0445 \u0432\u0435\u0440\u043d\u0438 \u0430\u0433\u0435\u043d\u0442\u0430\u043c \u0447\u0435\u043a\u043b\u0438\u0441\u0442 \u043d\u0430 \u043f\u0440\u0430\u0432\u043a\u0443, \u0430 \u043f\u043e\u0441\u043b\u0435 \u0443\u0441\u043f\u0435\u0445\u0430 \u0443\u0432\u0435\u0434\u043e\u043c\u0438 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f. QA may create adaptive, app-specific test checklists, automated tests, test data, and verification commands while coordinating with the bot team.",
+    tokenBudget: 30_000,
+    tools: ["files", "mcp"],
+    status: "waiting",
+  },
 ];
 
 export const projectsSeed: ProjectConfig[] = [
   {
     id: "project-default",
-    title: "РќРѕРІС‹Р№ РїСЂРѕРµРєС‚",
+    title: "Новый проект",
     status: "draft",
     createdAt: new Date(0).toISOString(),
     updatedAt: new Date(0).toISOString(),
@@ -157,7 +168,7 @@ export const projectsSeed: ProjectConfig[] = [
 export const sessionSeed: SessionConfig = {
   id: "session-default",
   projectId: "project-default",
-  title: "РќРѕРІР°СЏ СЃРµСЃСЃРёСЏ",
+  title: "Новая сессия",
   mode: "planning",
   tokenBudget: 120_000,
   tokensUsed: 0,

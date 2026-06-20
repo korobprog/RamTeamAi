@@ -50,10 +50,11 @@ describe("selectImplementationAgents", () => {
       agent("cr", "critic", ["files"]),
       agent("r", "researcher", ["mcp"]),
       agent("c", "coder", ["project-builder", "files"]),
+      agent("t", "tester", ["files", "mcp"]),
       agent("a", "architect", ["project-builder"]),
     ];
     const selected = selectImplementationAgents(team, 3);
-    expect(selected.map((item) => item.id)).toEqual(["c"]);
+    expect(selected.map((item) => item.id)).toEqual(["c", "t"]);
   });
 
   it("falls back to project-builder agents only when no coder exists", () => {
@@ -64,8 +65,8 @@ describe("selectImplementationAgents", () => {
     expect(selectImplementationAgents(team, 3).map((item) => item.id)).toEqual(["a"]);
   });
 
-  it("uses only coder agents from the default team for implementation", () => {
-    expect(selectImplementationAgents(agentsSeed, 3).map((item) => item.role)).toEqual(["coder"]);
+  it("uses the coder plus QA agent from the default team for implementation", () => {
+    expect(selectImplementationAgents(agentsSeed, 3).map((item) => item.role)).toEqual(["coder", "tester"]);
   });
 });
 

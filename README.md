@@ -50,10 +50,25 @@ RamTeamAi — настольный AI-клиент на **Tauri 2 + React + Type
 
 - Windows публикуем как NSIS installer: `npm run release:windows`.
 - macOS публикуем как DMG: `npm run release:mac`.
-- Версию синхронизируем командой `npm run version:set -- 0.1.1`.
+- Подготовлен новый релиз 0.1.3: синхронизированы версии проекта и заметки к сборке.
+- Версию синхронизируем командой `npm run version:set -- 0.1.3`.
 - Автообновления настроены через Tauri updater и GitHub Releases.
 
 Подробный процесс: [`docs/release.md`](docs/release.md).
+
+### Защита донат-кошельков
+
+- Реквизиты доната вынесены в `src/config/donationWallets.ts`.
+- Файл защищён через `.github/CODEOWNERS`: изменения должны проходить через владельца `@korobprog`.
+- Workflow `.github/workflows/protect-donation-wallets.yml` блокирует PR с изменениями кошельков от не-владельца.
+- На GitHub включена branch protection для `main`: обязательный Pull Request, Code Owner Review, устаревание review после новых коммитов и запрет force-push/delete.
+
+### Версия и проверка обновлений
+
+- Текущая версия приложения берётся из `package.json` и показывается в настройках.
+- Tauri updater проверяет `https://github.com/korobprog/RamTeamAi/releases/latest/download/latest.json`.
+- GitHub Actions публикует release не как draft, чтобы `/releases/latest/` сразу указывал на новую версию.
+- Если в GitHub Releases опубликован `latest.json` с версией выше установленной, приложение показывает уведомление с новой версией и кнопкой обновления.
 
 ### 1. Стартовый экран
 

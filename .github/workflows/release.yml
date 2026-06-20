@@ -57,6 +57,6 @@ jobs:
           tagName: ${{ inputs.version || github.ref_name }}
           releaseName: "RamTeamAi ${{ inputs.version || github.ref_name }}"
           releaseBody: "See CHANGELOG.md for release notes."
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

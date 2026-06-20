@@ -30,7 +30,26 @@ export type ChecklistEvidenceContents = Record<string, string>;
 const IMPLEMENTATION_ACTION_TOKENS = /созда|собра|реализ|напис|замен|встав|подключ|добав|обнов|исправ|настро|установ|интегр|create|implement|write|replace|connect|configure|install|add|update|fix/i;
 const COMMAND_OR_VERIFICATION_TOKENS = /(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|build|test|lint|check)|\b(?:dev|build|test|lint)\b|запуст|провер|прогнать|smoke|сборк|тест/i;
 const NON_BLOCKING_TOKENS = /выбрать\s+следующ|следующий\s+вариант|нажм|клик|после\s+клика|если\s+нуж(?:ен|на|но|ны)|при\s+необходимости|опциональ|можно\s+добав|в\s+следующ(?:ей|их)\s+итерац|я\s+(?:разложу|подготовлю|добавлю|сделаю)|дальше\s+можно/i;
-const EXPLICIT_FILE_PATTERN = /(?:`|["'])?((?:(?:src|app|components|lib|pages|styles|tests|assets|docs|src-tauri)\/[A-Za-z0-9._/-]+\.[A-Za-z0-9]+)|(?:package|vite\.config|tsconfig|tailwind\.config|postcss\.config|components)\.[A-Za-z0-9.]+|(?:App|main|index|styles)\.(?:tsx?|jsx?|css))(?:`|["'])?/gi;
+const EXPLICIT_FILE_PATTERN = /(?:`|["'])?((?:(?:src|app|components|lib|pages|styles|tests|test|__tests__|assets|docs|src-tauri)\/[A-Za-z0-9._/-]+\.[A-Za-z0-9]+)|(?:package|vite\.config|vitest\.config|tsconfig|tailwind\.config|postcss\.config|components)\.[A-Za-z0-9.]+|(?:App|main|index|styles)\.(?:tsx?|jsx?|css))(?:`|["'])?/gi;
+const PACKAGE_MANAGER_COMMAND_PATTERN = /(?:npm|pnpm|yarn|bun)\s+(?:(?:run\s+)?(?:dev|build|test|lint|check|preview)|install|i|ci)\b/i;
+const COMMAND_ONLY_VERBS = /(?:^|\s)(?:перейти|перейди|зайти|зайди|cd|запустить|запусти|выполнить|выполни|проверить|проверь|открыть|открой|run|execute|install)\b/i;
+const CODE_WRITING_HINTS = /созд|добав|замен|обнов|реализ|напис|встав|подключ|исправ|create|add|write|implement|replace|update|fix|package\.json|src\/|tests?\//i;
+const USER_FACING_FILE_PATTERN = /^(?:index\.html|src\/.+\.(?:tsx?|jsx?|css|html)|README\.md|docs\/.+\.md)$/;
+const MOJIBAKE_MARKERS = [
+  "\u0420\u045f", // Рџ
+  "\u0420\u045d", // Рќ
+  "\u0420\u040e", // РЎ
+  "\u0421\u0453", // СЃ
+  "\u0421\u201a", // С‚
+  "\u0420\u00b0", // Р°
+  "\u0420\u00b5", // Рµ
+  "\u0432\u0402", // вЂ
+  "\u0432\u2020", // в†
+  "\u0412\u00ab", // В«
+  "\u0412\u00bb", // В»
+  "\u00ef\u00bf\u00bd", // ï¿½
+  "?????",
+];
 
 interface StepEvidence {
   known: boolean;
@@ -42,10 +61,17 @@ export function isNonBlockingImplementationStep(step: string): boolean {
   const text = step.trim();
   if (!text) return true;
   if (NON_BLOCKING_TOKENS.test(text)) return true;
+  if (isCommandOnlyStep(text)) return true;
 
   const hasImplementationAction = IMPLEMENTATION_ACTION_TOKENS.test(text);
   const commandOrVerificationOnly = COMMAND_OR_VERIFICATION_TOKENS.test(text) && !hasImplementationAction;
   return commandOrVerificationOnly;
+}
+
+function isCommandOnlyStep(text: string): boolean {
+  return PACKAGE_MANAGER_COMMAND_PATTERN.test(text) &&
+    COMMAND_ONLY_VERBS.test(text) &&
+    !CODE_WRITING_HINTS.test(text);
 }
 
 function nonBlockingNote(): string {
@@ -61,7 +87,10 @@ function isManualVerificationConcern(note?: string): boolean {
 }
 
 function deterministicEvidenceProvesDone(item?: ChecklistItem): boolean {
-  return Boolean(item?.done && item.note?.startsWith("Найдены файлы/зависимости"));
+  return Boolean(item?.done && (
+    item.note?.startsWith("Найдены файлы/зависимости") ||
+    item.note?.startsWith("Found stack-matched automated tests")
+  ));
 }
 
 function deterministicEvidenceProvesMissing(item?: ChecklistItem): boolean {
@@ -71,7 +100,9 @@ function deterministicEvidenceProvesMissing(item?: ChecklistItem): boolean {
     (
       item.note?.startsWith("Нет файлов:") ||
       item.note?.startsWith("Файлы ещё заглушки:") ||
-      item.note?.startsWith("Нет доказательств подключения:")
+      item.note?.startsWith("Нет доказательств подключения:") ||
+      item.note?.startsWith("Missing test evidence:") ||
+      item.note?.startsWith("Encoding check failed:")
     ),
   );
 }
@@ -155,8 +186,8 @@ function evaluateFileEvidence(step: string, normalizedFiles: string[], contents:
   const explicitFiles = extractExplicitFiles(step);
   if (!explicitFiles.length) return { known: false, satisfied: false };
 
-  const missing = explicitFiles.filter((file) => !normalizedFiles.includes(file));
-  const stubbed = explicitFiles.filter((file) => contents[file]?.includes("ready for the agent team to extend"));
+  const missing = explicitFiles.filter((file) => !pathSatisfied(file, normalizedFiles));
+  const stubbed = explicitFiles.filter((file) => pathAlternatives(file).some((candidate) => contents[candidate]?.includes("ready for the agent team to extend")));
   return {
     known: true,
     satisfied: missing.length === 0 && stubbed.length === 0,
@@ -168,13 +199,116 @@ function evaluateFileEvidence(step: string, normalizedFiles: string[], contents:
   };
 }
 
+function pathAlternatives(path: string): string[] {
+  const normalized = normalizePath(path);
+  if (normalized === "styles.css" || normalized === "src/styles.css" || normalized === "src/index.css") {
+    // Vite/React scaffolds conventionally import `src/index.css`. Many agent
+    // plans and reports still say just `styles.css`; treat them as the same
+    // product stylesheet so the auto-loop does not burn rounds chasing an alias.
+    return ["styles.css", "src/styles.css", "src/index.css"];
+  }
+  return [normalized];
+}
+
+function pathSatisfied(path: string, normalizedFiles: string[]): boolean {
+  return pathAlternatives(path).some((candidate) => normalizedFiles.includes(candidate));
+}
+
+function isAutomatedTestFilePath(path: string): boolean {
+  return /^(?:tests|test|__tests__)\/.+\.(?:test|spec)\.(?:tsx?|jsx?)$/.test(path) ||
+    /^src\/.+(?:__tests__\/.+|[._-](?:test|spec))\.(?:tsx?|jsx?)$/.test(path) ||
+    /^(?:tests|test)\/test_.+\.py$/.test(path) ||
+    /^(?:tests|test)\/.+_test\.go$/.test(path) ||
+    /^(?:tests|test)\/.+\.rs$/.test(path);
+}
+
+function isAutomatedTestingStepText(step: string): boolean {
+  const text = normalizeText(step);
+  const mentionsTests = /auto[-\s]?tests?|tests?|testing|vitest|jest|playwright|pytest|unit|integration|e2e|spec|тест/i.test(text);
+  const asksToCreate = /create|add|write|implement|cover|configure|make|созд|добав|напис|реализ|покры|настро/i.test(text);
+  return mentionsTests && asksToCreate;
+}
+
+function evaluateTestEvidence(step: string, normalizedFiles: string[], contents: ChecklistEvidenceContents): StepEvidence {
+  if (!isAutomatedTestingStepText(step)) return { known: false, satisfied: false };
+
+  const testFiles = normalizedFiles.filter(isAutomatedTestFilePath);
+  if (!testFiles.length) {
+    return {
+      known: true,
+      satisfied: false,
+      note: "Missing test evidence: no automated test file found for the stack.",
+    };
+  }
+
+  const hasContentEvidence = Object.keys(contents).length > 0;
+  if (!hasContentEvidence) {
+    return {
+      known: true,
+      satisfied: false,
+      note: "Missing test evidence: test files exist, but their contents were not readable.",
+    };
+  }
+
+  const text = normalizeText(step);
+  const blob = contentBlob(contents);
+  const packageJson = contents["package.json"] ?? "";
+  const isJsStack = /react|vite|next|node|typescript|tsx?|vitest|jest|testing library|package\.json/.test(text) ||
+    testFiles.some((file) => /\.(tsx?|jsx?)$/.test(file));
+  const isReactStack = /react|tsx|testing library|@testing-library\/react/.test(text) ||
+    /from\s+["']react["']|"react"\s*:/.test(blob);
+  const isPythonStack = /python|pytest/.test(text) || testFiles.some((file) => file.endsWith(".py"));
+
+  const missing: string[] = [];
+  if (isJsStack) {
+    if (!/"test"\s*:/.test(packageJson)) missing.push("package.json test script");
+    if (!/vitest|jest|playwright|node:test/.test(blob)) missing.push("JS test runner");
+    if (isReactStack && !/@testing-library\/react|react-dom\/test-utils|render\s*\(/.test(blob)) {
+      missing.push("React component testing utility");
+    }
+  }
+  if (isPythonStack && !/pytest|unittest/.test(blob)) {
+    missing.push("Python test runner");
+  }
+
+  return {
+    known: true,
+    satisfied: missing.length === 0,
+    note: missing.length
+      ? "Missing test evidence: " + missing.join(", ") + "."
+      : "Found stack-matched automated tests and a runnable test command.",
+  };
+}
+
+function containsMojibake(content: string): boolean {
+  return MOJIBAKE_MARKERS.some((marker) => content.includes(marker));
+}
+
+function findCorruptedUserFacingFiles(contents: ChecklistEvidenceContents): string[] {
+  return Object.entries(contents)
+    .filter(([path, content]) => USER_FACING_FILE_PATTERN.test(path) && containsMojibake(content))
+    .map(([path]) => path);
+}
+
+function evaluateEncodingEvidence(contents: ChecklistEvidenceContents): StepEvidence {
+  const corrupted = findCorruptedUserFacingFiles(contents);
+  if (!corrupted.length) return { known: false, satisfied: false };
+  return {
+    known: true,
+    satisfied: false,
+    note: "Encoding check failed: найдена битая кодировка/mojibake в пользовательских файлах: " + corrupted.join(", ") + ".",
+  };
+}
+
 function evaluateStepEvidence(step: string, normalizedFiles: string[], contents: ChecklistEvidenceContents, readyDone: boolean): StepEvidence {
+  const encodingEvidence = evaluateEncodingEvidence(contents);
   const fileEvidence = evaluateFileEvidence(step, normalizedFiles, contents);
   const techEvidence = evaluateTechEvidence(step, normalizedFiles, contents);
-  const known = fileEvidence.known || techEvidence.known;
+  const testEvidence = evaluateTestEvidence(step, normalizedFiles, contents);
+  const known = encodingEvidence.known || fileEvidence.known || techEvidence.known || testEvidence.known;
   if (!known) return { known: false, satisfied: readyDone };
 
-  const blockers = [fileEvidence, techEvidence].filter((item) => item.known && !item.satisfied);
+  const blockers = [encodingEvidence, fileEvidence, techEvidence, testEvidence].filter((item) => item.known && !item.satisfied);
   return {
     known: true,
     satisfied: blockers.length === 0,

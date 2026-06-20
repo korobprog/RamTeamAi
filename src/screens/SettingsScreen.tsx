@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Chip, SectionTitle } from "../components/FRamTeamAie";
 import { describeMcpHealth, listAvailableTools } from "../mcp/manager";
 import { useAppStore } from "../store/appStore";
+import { APP_GITHUB_URL, APP_VERSION } from "../config/appMeta";
+import { donationMethods, type DonationMethod } from "../config/donationWallets";
 import type { ScreenId, ThemePreference } from "../types";
 
 const themeOptions: Array<{ id: ThemePreference; label: string; icon: string; hint: string }> = [
@@ -20,42 +23,6 @@ type SettingsCard = {
   screen: ScreenId;
   tone?: "default" | "info" | "success" | "warning";
 };
-
-type DonationMethod = {
-  id: string;
-  title: string;
-  subtitle: string;
-  value: string;
-  displayValue?: string;
-};
-
-const donationMethods: DonationMethod[] = [
-  {
-    id: "alfa-card",
-    title: "Карта Альфа-Банк",
-    subtitle: "На развитие программы и облачный хостинг",
-    value: "2200153696450346",
-    displayValue: "2200 1536 9645 0346",
-  },
-  {
-    id: "usdt-trc20",
-    title: "USDT TRC20",
-    subtitle: "TRON",
-    value: "TEpXDuC7CmzpHmip9ppqHMreT4Z1R6Tp4D",
-  },
-  {
-    id: "usdt-ton",
-    title: "USDT TON",
-    subtitle: "The Open Network",
-    value: "UQB_wLx_GKd1Kkvgv4o-mRqngu2_S7bWFRQXNzEVRELFc2AV",
-  },
-  {
-    id: "usdt-bsc",
-    title: "USDT BSC",
-    subtitle: "BNB Smart Chain (BEP20)",
-    value: "0x514691B807C30181a145BE2202431B28418A6Ba8",
-  },
-];
 
 function pluralRu(count: number, one: string, few: string, many: string): string {
   const mod10 = count % 10;
@@ -202,6 +169,14 @@ export function SettingsScreen() {
     }
   }
 
+  async function openProjectRepository() {
+    try {
+      await openUrl(APP_GITHUB_URL);
+    } catch {
+      window.open(APP_GITHUB_URL, "_blank", "noopener,noreferrer");
+    }
+  }
+
   function linkRepo() {
     linkActiveProjectToGithub({ owner: repoOwner, repo: repoName, branch: repoBranch });
     setRepoOwner("");
@@ -231,7 +206,10 @@ export function SettingsScreen() {
           <h3>{account.github ? account.github.name || account.github.login : "Профиль пользователя"}</h3>
           <p>{account.github ? "GitHub @" + account.github.login + ". Firebase хранит только настройки, без диалогов и секретных ключей." : "Подключите GitHub, чтобы привязывать проекты к репозиториям и синхронизировать настройки через Firebase."}</p>
         </div>
-        <Chip tone={account.github ? "success" : "info"}>{account.github ? "GitHub" : "local"}</Chip>
+        <div className="app-meta-stack">
+          <Chip tone={account.github ? "success" : "info"}>{account.github ? "GitHub" : "local"}</Chip>
+          <Chip tone="info">v{APP_VERSION}</Chip>
+        </div>
       </section>
 
       <section className="settings-section account-sync-panel">
@@ -249,6 +227,7 @@ export function SettingsScreen() {
           <button type="button" disabled={busy || !account.firebaseUid} onClick={() => void syncSettingsToCloud()}>Сохранить настройки в Firebase</button>
           <button type="button" disabled={busy || !account.firebaseUid} onClick={() => void restoreSettingsFromCloud()}>Загрузить настройки</button>
           <button className="ghost" type="button" disabled={busy || !account.github} onClick={() => void disconnectAccount()}>Отключить</button>
+          <button className="ghost" type="button" onClick={() => void openProjectRepository()}><i className="ti ti-brand-github" aria-hidden="true" /> GitHub RamTeamAi</button>
         </div>
         <p className="sync-message">{account.sync.message ?? "Готово"}{account.sync.lastSyncAt ? " · " + new Date(account.sync.lastSyncAt).toLocaleString("ru-RU") : ""}</p>
       </section>
@@ -329,7 +308,7 @@ export function SettingsScreen() {
             />
           </label>
           <label>
-            Lease online, ???
+            Lease online, sec
             <input
               type="number"
               min={15}

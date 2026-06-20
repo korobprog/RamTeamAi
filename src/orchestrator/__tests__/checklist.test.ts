@@ -37,6 +37,20 @@ describe("buildChecklist", () => {
     expect(isNonBlockingImplementationStep("Подключить Tailwind и lucide-react, затем запустить npm run dev")).toBe(false);
   });
 
+  it("does not let package-manager command-only steps block implementation rounds", () => {
+    const commandSteps = [
+      "Перейти в `ramteamai-landing` и выполнить `npm install`",
+      "Run `npm install && npm run dev`, check browser, then run `npm run build`",
+      "Создать package.json и добавить npm test",
+    ];
+    const items = buildChecklist(commandSteps);
+
+    expect(items[0].done).toBe(true);
+    expect(items[1].done).toBe(true);
+    expect(items[2].done).toBe(false);
+    expect(pendingImplementationSteps(commandSteps, items)).toEqual(["Создать package.json и добавить npm test"]);
+  });
+
   it("returns only unfinished actionable steps for the next implementation round", () => {
     const roundSteps = [
       "Создать src/App.tsx для лендинга",
@@ -149,6 +163,20 @@ describe("heuristicChecklist", () => {
     expect(items[0].done).toBe(true);
   });
 
+  it("accepts Vite src/index.css when the plan asks for styles.css", () => {
+    const items = heuristicChecklist(
+      ["Создать `index.html` и `styles.css`, вставить код и открыть страницу в браузере"],
+      ["index.html", "src/index.css"],
+      "scaffold-ok",
+      {
+        "index.html": '<div id="root"></div><script type="module" src="/src/main.tsx"></script>',
+        "src/index.css": ".hero { min-height: 100vh; }",
+      },
+    );
+
+    expect(items[0].done).toBe(true);
+  });
+
   it("completes the screenshot landing checklist only when code, css and dependencies are present", () => {
     const screenshotSteps = [
       "Создать/открыть Vite React TypeScript проект и заменить `src/App.tsx` на код лендинга",
@@ -175,6 +203,59 @@ describe("heuristicChecklist", () => {
     });
     expect(missingCss[2].done).toBe(false);
     expect(pendingImplementationSteps(screenshotSteps, missingCss)).toEqual(["Вставить `src/App.tsx` и `src/index.css` в проект"]);
+  });
+
+  it("keeps generated test steps open until stack-matched test files and commands exist", () => {
+    const testStep = "Create stack-matched automated tests in package.json and tests/App.test.tsx (Vitest + React Testing Library) and make npm test runnable";
+    const missingTests = heuristicChecklist([testStep], ["package.json", "src/App.tsx"], "scaffold-ok", {
+      "package.json": JSON.stringify({ scripts: { build: "vite build" }, dependencies: { react: "latest" } }),
+      "src/App.tsx": "export default function App() { return <main>Ready</main>; }".repeat(3),
+    });
+    expect(missingTests[0].done).toBe(false);
+    expect(missingTests[0].note).toMatch(/Missing test evidence/);
+
+    const missingRunner = heuristicChecklist([testStep], ["package.json", "src/App.tsx", "tests/App.test.tsx"], "scaffold-ok", {
+      "package.json": JSON.stringify({ scripts: { build: "vite build" }, dependencies: { react: "latest" } }),
+      "src/App.tsx": "export default function App() { return <main>Ready</main>; }".repeat(3),
+      "tests/App.test.tsx": "import { render } from \"@testing-library/react\"; import App from \"../src/App\";",
+    });
+    expect(missingRunner[0].done).toBe(false);
+    expect(missingRunner[0].note).toMatch(/test script|runner/);
+
+    const complete = heuristicChecklist([testStep], ["package.json", "src/App.tsx", "tests/App.test.tsx"], "scaffold-ok", {
+      "package.json": JSON.stringify({
+        scripts: { test: "vitest run" },
+        dependencies: { react: "latest" },
+        devDependencies: { vitest: "latest", "@testing-library/react": "latest" },
+      }),
+      "src/App.tsx": "export default function App() { return <main>Ready</main>; }".repeat(3),
+      "tests/App.test.tsx": "import { render, screen } from \"@testing-library/react\"; import { describe, expect, it } from \"vitest\"; import App from \"../src/App\"; it(\"renders\", () => { render(<App />); expect(screen.getByText(/Ready/)).toBeTruthy(); });",
+    });
+    expect(complete[0].done).toBe(true);
+  });
+
+  it("keeps the checklist open when user-facing files contain mojibake", () => {
+    const testStep = "Create stack-matched automated tests in package.json and tests/App.test.tsx (Vitest + React Testing Library) and make npm test runnable";
+    const items = heuristicChecklist(
+      ["Создать `src/App.tsx` для лендинга", testStep],
+      ["package.json", "src/App.tsx", "src/index.css", "tests/App.test.tsx"],
+      "scaffold-ok",
+      {
+        "package.json": JSON.stringify({
+          scripts: { test: "vitest run" },
+          dependencies: { react: "latest", "react-dom": "latest" },
+          devDependencies: { vitest: "latest", "@testing-library/react": "latest" },
+        }),
+        "src/App.tsx": "export default function App() { return <main>РџРѕРґРєР»СЋС‡Р°Р№С‚Рµ API and Build artifact</main>; }".repeat(3),
+        "src/index.css": ".page { min-height: 100vh; }",
+        "tests/App.test.tsx": "import { render, screen } from \"@testing-library/react\"; import { describe, expect, it } from \"vitest\"; import App from \"../src/App\"; it(\"renders\", () => { render(<App />); expect(screen.getByText(/Build artifact/)).toBeTruthy(); });",
+      },
+    );
+
+    expect(items[0].done).toBe(false);
+    expect(items[0].note).toMatch(/Encoding check failed/);
+    expect(items[1].done).toBe(false);
+    expect(checklistComplete(items)).toBe(false);
   });
 });
 
@@ -256,6 +337,21 @@ describe("mergeChecklist", () => {
     expect(fallback[0].note).toMatch(/Tailwind|lucide-react/);
 
     const verdicts = parseChecklistVerdict("1. DONE — зависимости подключены", step);
+    const merged = mergeChecklist(step, verdicts, fallback);
+
+    expect(merged[0].done).toBe(false);
+    expect(merged[0].source).toBe("heuristic");
+  });
+
+  it("keeps deterministic encoding evidence stronger than a false verifier DONE", () => {
+    const step = ["Создать `src/App.tsx` для лендинга"];
+    const fallback = heuristicChecklist(step, ["src/App.tsx"], "scaffold-ok", {
+      "src/App.tsx": "export default function App() { return <main>РџРѕРґРєР»СЋС‡Р°Р№С‚Рµ API</main>; }".repeat(3),
+    });
+    expect(fallback[0].done).toBe(false);
+    expect(fallback[0].note).toMatch(/Encoding check failed/);
+
+    const verdicts = parseChecklistVerdict("1. DONE — лендинг готов", step);
     const merged = mergeChecklist(step, verdicts, fallback);
 
     expect(merged[0].done).toBe(false);

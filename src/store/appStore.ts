@@ -24,10 +24,11 @@ import { selectRunAgents } from "../orchestrator/agentSelection";
 import { buildChecklist, checklistComplete, checklistMatchesSteps, checklistProgress, heuristicChecklist, mergeChecklist, parseChecklistVerdict, pendingImplementationSteps, renderVerificationPrompt, type ChecklistItem } from "../orchestrator/checklist";
 import { completeWithProvider, maskSecret, rememberProviderSecret, testProviderConnection } from "../providers";
 import type { CompletionResult, ProviderTestResult } from "../providers";
+import { applyProviderQuotaUsage } from "../providers/limits";
 import { buildProject, planImplementationAssignments, renderImplementationPlan, SCAFFOLD_APP_STUB_MARKER, validateProjectCompleteness } from "../projectBuilder";
 import { beginGithubDeviceFlow, disconnectGithub, isGithubConfigured, loadGithubProfile, pollGithubDeviceFlow } from "../integrations/github";
 import { describeFirebaseAuthError, isFirebaseConfigured, loadCloudSettings, loadFirebaseUid, saveCloudSettings, signInFirebaseWithGithubToken, signOutFirebase } from "../integrations/firebase";
-import type { AgentConfig, AgentDialogMessage, AgentRunCheckpoint, AgentRunMode, AppSettings, BuildResult, ChatMessage, CloudSettingsSnapshot, GithubTokenPollResult, ImplementationAssignment, LiveFileActivity, McpServerConfig, McpServerTestResult, McpToolCallResult, MessageAction, PlanArtifact, ProjectConfig, ProjectGitLink, ProviderConfig, ProviderMonitoringConfig, ProjectReadinessStatus, QueuedAgentQuestion, ScreenId, SessionConfig, TopologyConfig, UserAccountState, WorkspaceInitResult } from "../types";
+import type { AgentConfig, AgentDialogMessage, AgentRunCheckpoint, AgentRunMode, AppSettings, BuildResult, ChatMessage, CloudSettingsSnapshot, GithubTokenPollResult, ImplementationAssignment, LiveFileActivity, McpServerConfig, McpServerTestResult, McpToolCallResult, MessageAction, PlanArtifact, ProjectConfig, ProjectGitLink, ProviderConfig, ProviderMonitoringConfig, ProjectReadinessStatus, QueuedAgentQuestion, SavedImplementationChecklistItem, ScreenId, SessionConfig, TopologyConfig, UserAccountState, WorkspaceInitResult } from "../types";
 import { clearStoredWebWorkspaceFolder, initWorkspaceFiles, listWorkspaceFiles, pickWorkspaceFolder, readWorkspaceTextFile, writeWorkspaceTextFile } from "../workspace";
 
 const PROVIDERS_STORAGE_KEY = "RamTeamAi.providers.v2";
@@ -65,8 +66,11 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
 const IMPLEMENTATION_ROUND_PROMPT = [
   "Режим реализации по утверждённому PLAN.md в рабочей папке.",
   "Не возвращайтесь к обсуждению и планированию. Возьмите конкретные файлы из плана и напишите их ПОЛНЫЙ код прямо сейчас.",
+  "Агенты сами ведут рабочий чеклист: откройте/обновите docs/agent-tasks.md, добавьте свои пункты, пометьте взятую задачу как «В работе: @имя», а закрытые пункты как [x]. Главный агент может добавлять/переназначать задания в этом же файле.",
   "Каждый файл оформляйте отдельной строкой `Файл: путь/к/файлу`, а сразу под ней fenced code block с полным содержимым файла — только так приложение запишет код на диск.",
   "Если файл уже существует (его содержимое приведено в снимке рабочей папки ниже) — это РЕДАКТИРОВАНИЕ: верните полный обновлённый текст файла целиком, сохранив неизменные части и дописав/исправив нужное. Не выдумывайте содержимое заново и не присылайте обрезанный файл или один diff.",
+  "Если в проекте ещё нет автотестов, создайте тесты под выбранный стек и обновите package/test-команды и зависимости; тестовые файлы тоже возвращайте блоками `Файл:` + код.",
+  "Тестовый этап не ручной: QA-агент создаёт в docs/agent-tasks.md раздел «Тестовый 3-step сценарий», пишет/обновляет автотесты и возвращает ошибки разработчикам как чеклист правок.",
   "Не описывайте файлы словами и не откладывайте «на следующую итерацию». Ответ без блоков `Файл:` + код не принимается.",
 ].join("\n");
 
@@ -76,11 +80,19 @@ const IMPLEMENTATION_ROUND_PROMPT = [
 function partitionStepsAcrossAgents(steps: string[], agents: AgentConfig[]): Map<string, string[]> {
   const buckets = new Map<string, string[]>(agents.map((agent) => [agent.id, []]));
   if (!agents.length) return buckets;
+  const tester = agents.find((agent) => agent.role === "tester");
+  const coder = agents.find((agent) => agent.role === "coder") ?? agents[0];
   steps.forEach((step, index) => {
-    const agent = agents[index % agents.length];
+    const agent = tester && isQaImplementationStep(step)
+      ? tester
+      : coder ?? agents[index % agents.length];
     buckets.get(agent.id)?.push(step);
   });
   return buckets;
+}
+
+function isQaImplementationStep(step: string): boolean {
+  return /auto[-\s]?tests?|tests?|testing|vitest|jest|playwright|pytest|unit|integration|e2e|spec|browser|devtools|qa|тест|провер/i.test(step);
 }
 
 // Per-agent directive that pins each agent to its own area and tells it not to
@@ -96,11 +108,19 @@ function buildAgentRoundDirective(
   ];
   if (ownedSteps.length) {
     lines.push("Твои незакрытые шаги в этом раунде (не бери чужие): " + ownedSteps.map((step) => `«${step}»`).join("; ") + ".");
+  } else if (agent.role === "tester") {
+    lines.push("Tester fallback: even when the plan has no explicit QA step, create or update an app-specific test checklist in `docs/agent-tasks.md`, add missing automated tests/test commands, and return the file as a `File:` block with full content.");
   } else if (assignment?.deliverables.length) {
     lines.push("Если явных незакрытых шагов для тебя нет, не пиши обзор: выбери ближайший недоделанный исходный файл из снимка и верни полный блок `Файл: путь` + код.");
   } else {
     lines.push("Нет отдельной зоны — помоги дописать ближайший недоделанный исходный файл и верни полный блок `Файл: путь` + код.");
   }
+  lines.push("Обязательно верни обновлённый `docs/agent-tasks.md` как файл-блок: создай/актуализируй свой чеклист, отметь взятую задачу и зафиксируй, что уже закрыто.");
+  if (agent.role === "tester" || ownedSteps.some(isQaImplementationStep)) {
+    lines.push("Твоя зона QA: создай раздел `Тестовый 3-step сценарий` в `docs/agent-tasks.md`, добавь/обнови автотесты под стек и верни ошибки как чеклист правок, а не как ручную просьбу к пользователю.");
+    lines.push("QA checklist is adaptive, not fixed: match it to the app type (landing, CRUD, e-commerce, auth, desktop/Tauri, API), and add domain smoke/e2e/unit checks plus test data when needed.");
+  }
+  lines.push("Сохраняй пользовательский текст в UTF-8: если видишь mojibake вроде `Рџ`, `РЎ`, `вЂ`, `В«`, исправь файл, такие тексты не считаются готовыми.");
   if (assignment?.summary) lines.push("Контекст роли: " + assignment.summary);
   if (alreadyWritten.length) {
     lines.push(
@@ -207,10 +227,14 @@ async function buildChecklistEvidenceContents(rootPath: string, files: string[])
       path === "package.json" ||
       path === "components.json" ||
       path === "tsconfig.json" ||
+      path === "index.html" ||
+      path === "README.md" ||
       /^vite\.config\.[cm]?[jt]s$/.test(path) ||
       /^tailwind\.config\.[cm]?[jt]s$/.test(path) ||
       /^postcss\.config\.[cm]?[jt]s$/.test(path) ||
-      /^src\/.+\.(tsx?|jsx?|css|html)$/.test(path),
+      /^src\/.+\.(tsx?|jsx?|css|html)$/.test(path) ||
+      /^docs\/.+\.md$/.test(path) ||
+      /^(?:tests|test|__tests__)\/.+\.(tsx?|jsx?|py|rs|go)$/.test(path),
     )
     .slice(0, 60);
   const contents: Record<string, string> = {};
@@ -234,6 +258,14 @@ function ensureProviderMonitoring(provider: ProviderConfig, saved?: ProviderMoni
     requestCount: saved?.requestCount ?? provider.monitoring?.requestCount ?? 0,
     errorCount: saved?.errorCount ?? provider.monitoring?.errorCount ?? 0,
     tokensUsed: saved?.tokensUsed ?? provider.monitoring?.tokensUsed ?? 0,
+    quotaShortWindowId: saved?.quotaShortWindowId ?? provider.monitoring?.quotaShortWindowId,
+    quotaShortStartedAt: saved?.quotaShortStartedAt ?? provider.monitoring?.quotaShortStartedAt ?? new Date(now).toISOString(),
+    quotaShortRequestCount: saved?.quotaShortRequestCount ?? provider.monitoring?.quotaShortRequestCount ?? 0,
+    quotaShortTokensUsed: saved?.quotaShortTokensUsed ?? provider.monitoring?.quotaShortTokensUsed ?? 0,
+    quotaLongWindowId: saved?.quotaLongWindowId ?? provider.monitoring?.quotaLongWindowId,
+    quotaLongStartedAt: saved?.quotaLongStartedAt ?? provider.monitoring?.quotaLongStartedAt ?? new Date(now).toISOString(),
+    quotaLongRequestCount: saved?.quotaLongRequestCount ?? provider.monitoring?.quotaLongRequestCount ?? 0,
+    quotaLongTokensUsed: saved?.quotaLongTokensUsed ?? provider.monitoring?.quotaLongTokensUsed ?? 0,
     healthStatus: saved?.healthStatus ?? provider.monitoring?.healthStatus ?? (provider.status === "connected" ? "ok" : "unknown"),
     consecutiveFailures: saved?.consecutiveFailures ?? provider.monitoring?.consecutiveFailures ?? 0,
     circuitOpenUntil: saved?.circuitOpenUntil ?? provider.monitoring?.circuitOpenUntil,
@@ -254,17 +286,21 @@ function updateProviderMonitoring(provider: ProviderConfig, patch: { tokens?: nu
     ? applyProviderHealth(provider, { ok: !patch.failed, latencyMs: patch.latencyMs, error: patch.error })
     : provider;
   const nextMonitoring = ensureProviderMonitoring(healthPatched, healthPatched.monitoring);
+  const countedRequest = patch.tokens !== undefined || patch.failed !== undefined;
+  const usageMonitoring = applyProviderQuotaUsage(healthPatched, {
+    ...nextMonitoring,
+    requestCount: monitoring.requestCount + (countedRequest ? 1 : 0),
+    errorCount: monitoring.errorCount + (patch.failed ? 1 : 0),
+    tokensUsed: monitoring.tokensUsed + tokens,
+  }, { tokens, countRequest: countedRequest });
 
   return {
     ...healthPatched,
     latencyMs: patch.latencyMs ?? provider.latencyMs,
     status: patch.failed ? "warning" : healthPatched.status,
     monitoring: {
-      ...nextMonitoring,
+      ...usageMonitoring,
       updatedAt: new Date().toISOString(),
-      requestCount: monitoring.requestCount + (patch.tokens !== undefined || patch.failed !== undefined ? 1 : 0),
-      errorCount: monitoring.errorCount + (patch.failed ? 1 : 0),
-      tokensUsed: monitoring.tokensUsed + tokens,
     },
   };
 }
@@ -337,6 +373,15 @@ function ensureBuilderAgent(agents: AgentConfig[], defaultAgents: AgentConfig[])
   return coder ? [...agents, coder] : agents;
 }
 
+function ensureCoreAgents(agents: AgentConfig[], defaultAgents: AgentConfig[]): AgentConfig[] {
+  let next = ensureBuilderAgent(agents, defaultAgents);
+  if (!next.some((agent) => agent.role === "tester")) {
+    const tester = defaultAgents.find((agent) => agent.role === "tester");
+    if (tester) next = [...next, tester];
+  }
+  return next;
+}
+
 function loadAgents(defaultAgents: AgentConfig[]): AgentConfig[] {
   if (typeof window === "undefined") return defaultAgents;
   try {
@@ -349,9 +394,9 @@ function loadAgents(defaultAgents: AgentConfig[]): AgentConfig[] {
       persistAgents(defaultAgents);
       return defaultAgents;
     }
-    const withBuilder = ensureBuilderAgent(agents, defaultAgents);
-    if (withBuilder.length !== agents.length) persistAgents(withBuilder);
-    return withBuilder;
+    const withCoreAgents = ensureCoreAgents(agents, defaultAgents);
+    if (withCoreAgents.length !== agents.length) persistAgents(withCoreAgents);
+    return withCoreAgents;
   } catch {
     return defaultAgents;
   }
@@ -490,14 +535,138 @@ function persistProjectWorkTimers(timers: Record<string, number>): void {
   window.localStorage.setItem(PROJECT_WORK_TIMERS_STORAGE_KEY, JSON.stringify(timers));
 }
 
+const PLAN_STATUSES = new Set<PlanArtifact["status"]>(["draft", "approved", "scaffolded", "built"]);
+
+function clonePlanArtifact(artifact: PlanArtifact): PlanArtifact {
+  return {
+    ...artifact,
+    stack: [...artifact.stack],
+    steps: [...artifact.steps],
+  };
+}
+
+function createEmptyPlanArtifact(sessionId = "empty"): PlanArtifact {
+  return {
+    ...clonePlanArtifact(planArtifactSeed),
+    id: "artifact-" + sessionId,
+    stack: [],
+    steps: [],
+    projectTree: "",
+    status: "draft",
+    edited: false,
+  };
+}
+
+function normalizePlanArtifact(artifact: PlanArtifact | undefined, sessionId = "empty"): PlanArtifact {
+  if (!artifact) return createEmptyPlanArtifact(sessionId);
+  const status = PLAN_STATUSES.has(artifact.status) ? artifact.status : "draft";
+  return {
+    id: artifact.id || "artifact-" + sessionId,
+    title: artifact.title?.trim() || planArtifactSeed.title,
+    stack: Array.isArray(artifact.stack) ? artifact.stack.map(String).filter(Boolean) : [],
+    steps: Array.isArray(artifact.steps) ? artifact.steps.map(String).filter(Boolean) : [],
+    projectTree: artifact.projectTree ?? "",
+    status,
+    edited: Boolean(artifact.edited),
+  };
+}
+
+function savedChecklistItems(items: ChecklistItem[] = []): SavedImplementationChecklistItem[] {
+  return items.map((item, index) => ({
+    id: item.id || "step-" + index,
+    index: Number.isFinite(item.index) ? item.index : index,
+    step: item.step,
+    done: Boolean(item.done),
+    source: item.source,
+    note: item.note,
+  }));
+}
+
+function normalizeChecklistItems(items?: SavedImplementationChecklistItem[] | ChecklistItem[]): ChecklistItem[] {
+  if (!Array.isArray(items)) return [];
+  return items
+    .filter((item) => typeof item?.step === "string" && item.step.trim())
+    .map((item, index) => ({
+      id: "id" in item && typeof item.id === "string" && item.id.trim() ? item.id : "step-" + index,
+      index: Number.isFinite(item.index) ? item.index : index,
+      step: item.step,
+      done: Boolean(item.done),
+      source: item.source === "verifier" || item.source === "heuristic" ? item.source : "pending",
+      note: item.note,
+    }));
+}
+
+function progressFromSession(session: SessionConfig, project?: ProjectConfig): {
+  artifact: PlanArtifact;
+  implementationChecklist: ChecklistItem[];
+  lastRunFilesWritten?: number;
+  lastBuild?: BuildResult;
+} {
+  let artifact = normalizePlanArtifact(session.artifact, session.id);
+  if (!session.artifact) {
+    const synthesized = synthesizePlan(session.messages ?? [], createEmptyPlanArtifact(session.id));
+    if (synthesized.steps.length || synthesized.stack.length || synthesized.projectTree.trim()) {
+      artifact = synthesized;
+    }
+  }
+  if (project?.status === "built" && artifact.steps.length) artifact = { ...artifact, status: "built" };
+  if (project?.status === "scaffolded" && artifact.status === "draft" && artifact.steps.length) artifact = { ...artifact, status: "scaffolded" };
+  return {
+    artifact,
+    implementationChecklist: normalizeChecklistItems(session.implementationChecklist),
+    lastRunFilesWritten: Number.isFinite(session.lastRunFilesWritten) ? session.lastRunFilesWritten : undefined,
+    lastBuild: session.lastBuild,
+  };
+}
+
+function withSessionProgress(
+  session: SessionConfig,
+  artifact: PlanArtifact,
+  checklist: ChecklistItem[],
+  lastRunFilesWritten?: number,
+  lastBuild?: BuildResult,
+): SessionConfig {
+  return {
+    ...session,
+    artifact: clonePlanArtifact(artifact),
+    implementationChecklist: savedChecklistItems(checklist),
+    lastRunFilesWritten,
+    lastBuild,
+  };
+}
+
 function pushLiveFileActivity(items: LiveFileActivity[], next: LiveFileActivity, limit = 12): LiveFileActivity[] {
   const withoutDuplicate = items.filter((item) => !(item.path === next.path && item.agentId === next.agentId));
   return [next, ...withoutDuplicate].slice(0, limit);
 }
 
-function createOperatorPrompt(text: string, targetAgent?: AgentConfig, settings?: AppSettings): string {
+function resolveMainAgent(agents: AgentConfig[], settings: AppSettings): AgentConfig | undefined {
+  return agents.find((agent) => agent.id === settings.operatorDefaultAgentId)
+    ?? agents.find((agent) => agent.role === "architect")
+    ?? agents[0];
+}
+
+function isProjectQuestionMode(state: { projects: ProjectConfig[]; activeProjectId: string; artifact: PlanArtifact }): boolean {
+  return state.artifact.status === "built"
+    || state.projects.find((project) => project.id === state.activeProjectId)?.status === "built";
+}
+
+function createOperatorPrompt(
+  text: string,
+  targetAgent?: AgentConfig,
+  settings?: AppSettings,
+  options: { projectQuestionMode?: boolean } = {},
+): string {
   const clean = text.trim();
   if (!targetAgent) return clean;
+  if (options.projectQuestionMode) {
+    return [
+      "Проект уже завершён и находится в режиме вопросов по готовому результату.",
+      `Отвечает только главный агент: «${targetAgent.name}» (${targetAgent.role}). Не подключай команду и не инициируй новые раунды планирования или реализации.`,
+      "Не пиши и не изменяй файлы, не проси вернуть блоки `Файл:` и не запускай генерацию кода. Отвечай текстом по существу, опираясь на историю проекта; если нужен новый код, предложи пользователю явно запустить отдельную доработку.",
+      clean,
+    ].join("\n\n");
+  }
   if (!settings?.operatorAssistantEnabled) {
     return `Вопрос оператора адресован агенту «${targetAgent.name}» (${targetAgent.role}). Ответь именно на него.\n\n${clean}`;
   }
@@ -727,8 +896,8 @@ function fallbackNotice(attempts: CompletionAttempt[]): string {
     .map((attempt) => `${attempt.providerName}/${attempt.modelLabel}`)
     .join(", ");
   return [
-    `↪️ Автопереключение модели: ${failedLabels} → ${success.providerName}/${success.modelLabel}.`,
-    failed[0]?.error ? `Причина: ${failed[0].error}` : "",
+    `\u21aa\ufe0f \u0410\u0432\u0442\u043e\u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u043c\u043e\u0434\u0435\u043b\u0438: ${failedLabels} \u2192 ${success.providerName}/${success.modelLabel}.`,
+    failed[0]?.error ? `\u041f\u0440\u0438\u0447\u0438\u043d\u0430: ${failed[0].error}` : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -741,8 +910,8 @@ function repairCorruptedMessage(message: ChatMessage): ChatMessage {
   if (!looksLikeEncodingDamage(message.text)) return message;
 
   const text = message.author === "system"
-    ? "Сначала отправьте задачу или контекст проекта. Без этого агенты не запускаются: моделям нечего разбирать."
-    : "Ответ был повреждён из-за кодировки. Запустите этот шаг заново после отправки понятной задачи или контекста проекта.";
+    ? "\u0421\u043d\u0430\u0447\u0430\u043b\u0430 \u043e\u0442\u043f\u0440\u0430\u0432\u044c\u0442\u0435 \u0437\u0430\u0434\u0430\u0447\u0443 \u0438\u043b\u0438 \u043a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 \u043f\u0440\u043e\u0435\u043a\u0442\u0430. \u0411\u0435\u0437 \u044d\u0442\u043e\u0433\u043e \u0430\u0433\u0435\u043d\u0442\u0430\u043c \u043d\u0435\u0447\u0435\u0433\u043e \u0440\u0430\u0437\u0431\u0438\u0440\u0430\u0442\u044c."
+    : "\u041e\u0442\u0432\u0435\u0442 \u0431\u044b\u043b \u043f\u043e\u0432\u0440\u0435\u0436\u0434\u0451\u043d \u0438\u0437-\u0437\u0430 \u043a\u043e\u0434\u0438\u0440\u043e\u0432\u043a\u0438. \u0417\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0435 \u044d\u0442\u043e\u0442 \u0448\u0430\u0433 \u0437\u0430\u043d\u043e\u0432\u043e \u043f\u043e\u0441\u043b\u0435 \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438 \u043f\u043e\u043d\u044f\u0442\u043d\u043e\u0439 \u0437\u0430\u0434\u0430\u0447\u0438 \u0438\u043b\u0438 \u043a\u043e\u043d\u0442\u0435\u043a\u0441\u0442\u0430 \u043f\u0440\u043e\u0435\u043a\u0442\u0430.";
 
   return {
     ...message,
@@ -751,20 +920,50 @@ function repairCorruptedMessage(message: ChatMessage): ChatMessage {
   };
 }
 
-function normalizeSession(session: SessionConfig, fallbackProjectId: string): SessionConfig {
+function normalizeProjectTitle(title: string | undefined, index: number): string {
+  const trimmed = title?.trim() ?? "";
+  if (!trimmed || trimmed === "RamTeamAi desktop MVP" || looksLikeEncodingDamage(trimmed)) {
+    return index === 0 ? "\u041d\u043e\u0432\u044b\u0439 \u043f\u0440\u043e\u0435\u043a\u0442" : "\u041f\u0440\u043e\u0435\u043a\u0442 " + (index + 1);
+  }
+  if (/^(?:\u0420\u045f|\u0420\u0421|\u0420\u040e)/.test(trimmed)) {
+    const number = trimmed.match(/(\d+)/)?.[1];
+    return number ? "\u041f\u0440\u043e\u0435\u043a\u0442 " + number : (index === 0 ? "\u041d\u043e\u0432\u044b\u0439 \u043f\u0440\u043e\u0435\u043a\u0442" : "\u041f\u0440\u043e\u0435\u043a\u0442 " + (index + 1));
+  }
+  return trimmed;
+}
+
+function normalizeSessionTitle(title: string | undefined, index = 0): string {
+  const trimmed = title?.trim() ?? "";
+  if (!trimmed || trimmed === "RamTeamAi desktop MVP" || looksLikeEncodingDamage(trimmed)) {
+    return index === 0 ? "\u041d\u043e\u0432\u0430\u044f \u0441\u0435\u0441\u0441\u0438\u044f" : "\u0421\u0435\u0441\u0441\u0438\u044f " + (index + 1);
+  }
+  if (/^(?:\u0420\u040e|\u0420\u045c|\u0421\u0453)/.test(trimmed)) {
+    const number = trimmed.match(/(\d+)/)?.[1];
+    return number ? "\u0421\u0435\u0441\u0441\u0438\u044f " + number : (index === 0 ? "\u041d\u043e\u0432\u0430\u044f \u0441\u0435\u0441\u0441\u0438\u044f" : "\u0421\u0435\u0441\u0441\u0438\u044f " + (index + 1));
+  }
+  return trimmed;
+}
+
+function normalizeSession(session: SessionConfig, fallbackProjectId: string, index = 0): SessionConfig {
   const messages = Array.isArray(session.messages) ? session.messages.map(repairCorruptedMessage) : [];
+  const id = session.id || "session-" + Date.now();
+  const artifact = session.artifact ? normalizePlanArtifact(session.artifact, id) : undefined;
+  const implementationChecklist = normalizeChecklistItems(session.implementationChecklist);
   return {
     ...session,
-    id: session.id || "session-" + Date.now(),
+    id,
     projectId: session.projectId || fallbackProjectId,
-    title: session.title === "RamTeamAi desktop MVP" ? "Новая сессия" : (session.title?.trim() || "Новая сессия"),
+    title: normalizeSessionTitle(session.title, index),
     mode: session.mode ?? "planning",
     tokenBudget: session.tokenBudget || 120_000,
     messages,
     tokensUsed: messages.reduce((sum, item) => sum + item.tokens, 0),
+    artifact,
+    implementationChecklist: savedChecklistItems(implementationChecklist),
+    lastRunFilesWritten: Number.isFinite(session.lastRunFilesWritten) ? session.lastRunFilesWritten : undefined,
+    lastBuild: session.lastBuild,
   };
 }
-
 function loadSessions(defaultSession: SessionConfig, projects: ProjectConfig[]): SessionConfig[] {
   const fallbackProjectId = projects[0]?.id ?? defaultSession.projectId;
   if (typeof window === "undefined") return [normalizeSession(defaultSession, fallbackProjectId)];
@@ -772,9 +971,9 @@ function loadSessions(defaultSession: SessionConfig, projects: ProjectConfig[]):
     const raw = window.localStorage.getItem(SESSIONS_STORAGE_KEY);
     if (!raw) return [normalizeSession(defaultSession, fallbackProjectId)];
     const sessions = (JSON.parse(raw) as SessionConfig[])
-      .map((session) => normalizeSession(session, fallbackProjectId))
+      .map((session, index) => normalizeSession(session, fallbackProjectId, index))
       .filter((session) => projects.some((project) => project.id === session.projectId));
-    if (raw.includes("???")) persistSessions(sessions);
+    if (raw.includes("???") || raw.includes("\u0420")) persistSessions(sessions);
     return sessions.length ? sessions : [normalizeSession(defaultSession, fallbackProjectId)];
   } catch {
     return [normalizeSession(defaultSession, fallbackProjectId)];
@@ -806,7 +1005,7 @@ function createProjectConfig(index: number): ProjectConfig {
   const now = new Date().toISOString();
   return {
     id: "project-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
-    title: index === 0 ? "Новый проект" : "Проект " + (index + 1),
+    title: index === 0 ? "\u041d\u043e\u0432\u044b\u0439 \u043f\u0440\u043e\u0435\u043a\u0442" : "\u041f\u0440\u043e\u0435\u043a\u0442 " + (index + 1),
     status: "draft",
     createdAt: now,
     updatedAt: now,
@@ -814,14 +1013,17 @@ function createProjectConfig(index: number): ProjectConfig {
 }
 
 function createSessionConfig(projectId: string, index: number): SessionConfig {
+  const id = "session-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
   return {
-    id: "session-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    id,
     projectId,
-    title: index === 0 ? "Новая сессия" : "Сессия " + (index + 1),
+    title: index === 0 ? "\u041d\u043e\u0432\u0430\u044f \u0441\u0435\u0441\u0441\u0438\u044f" : "\u0421\u0435\u0441\u0441\u0438\u044f " + (index + 1),
     mode: "planning",
     tokenBudget: 120_000,
     tokensUsed: 0,
     messages: [],
+    artifact: createEmptyPlanArtifact(id),
+    implementationChecklist: [],
   };
 }
 
@@ -845,11 +1047,13 @@ function createPlaceholderSession(projectId = ""): SessionConfig {
   return {
     id: "session-placeholder",
     projectId,
-    title: "Новая сессия",
+    title: "\u041d\u043e\u0432\u0430\u044f \u0441\u0435\u0441\u0441\u0438\u044f",
     mode: "planning",
     tokenBudget: 120_000,
     tokensUsed: 0,
     messages: [],
+    artifact: createEmptyPlanArtifact("session-placeholder"),
+    implementationChecklist: [],
   };
 }
 
@@ -895,18 +1099,26 @@ function ensureActiveSelection(projects: ProjectConfig[], sessions: SessionConfi
   };
 }
 
+function selectionWithProgress(selection: ReturnType<typeof ensureActiveSelection>) {
+  const project = selection.projects.find((item) => item.id === selection.activeProjectId);
+  return {
+    ...selection,
+    ...progressFromSession(selection.session, project),
+  };
+}
+
 function titleFromPrompt(prompt: string): string {
-  const normalized = prompt.replace(/^\/?init$/i, "Инициализация проекта").split(/\r?\n/)[0]?.replace(/\s+/g, " ").trim();
-  if (!normalized) return "Новая сессия";
-  return normalized.length > 44 ? normalized.slice(0, 41).trimEnd() + "…" : normalized;
+  const normalized = prompt.replace(/^\/?init$/i, "\u0418\u043d\u0438\u0446\u0438\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u044f \u043f\u0440\u043e\u0435\u043a\u0442\u0430").split(/\r?\n/)[0]?.replace(/\s+/g, " ").trim();
+  if (!normalized) return "\u041d\u043e\u0432\u0430\u044f \u0441\u0435\u0441\u0441\u0438\u044f";
+  return normalized.length > 44 ? normalized.slice(0, 41).trimEnd() + "\u2026" : normalized;
 }
 
 function isDefaultProjectTitle(title: string): boolean {
-  return title === "Новый проект" || /^Проект \d+$/.test(title) || title === "RamTeamAi desktop MVP";
+  return title === "\u041d\u043e\u0432\u044b\u0439 \u043f\u0440\u043e\u0435\u043a\u0442" || /^\u041f\u0440\u043e\u0435\u043a\u0442 \d+$/.test(title) || looksLikeEncodingDamage(title) || title === "RamTeamAi desktop MVP";
 }
 
 function isDefaultSessionTitle(title: string): boolean {
-  return title === "Новая сессия" || /^Сессия \d+$/.test(title) || title === "RamTeamAi desktop MVP";
+  return title === "\u041d\u043e\u0432\u0430\u044f \u0441\u0435\u0441\u0441\u0438\u044f" || /^\u0421\u0435\u0441\u0441\u0438\u044f \d+$/.test(title) || looksLikeEncodingDamage(title) || title === "RamTeamAi desktop MVP";
 }
 
 function withSystemMessage(session: SessionConfig, text: string): SessionConfig {
@@ -1012,6 +1224,8 @@ const initialSessions = loadSessions(sessionSeed, initialProjects);
 const initialActiveProjectId = resolveActiveProjectId(initialProjects, initialSessions);
 const initialActiveSessionId = resolveActiveSessionId(initialSessions, initialActiveProjectId);
 const initialSession = initialSessions.find((session) => session.id === initialActiveSessionId) ?? initialSessions[0] ?? normalizeSession(sessionSeed, initialActiveProjectId);
+const initialProject = initialProjects.find((project) => project.id === initialSession.projectId);
+const initialProgress = progressFromSession(initialSession, initialProject);
 
 export const useAppStore = create<AppState>((set, get) => ({
   screen: "onboarding",
@@ -1031,12 +1245,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeSessionId: initialActiveSessionId,
   session: initialSession,
   topology: topologySeed,
-  artifact: planArtifactSeed,
+  artifact: initialProgress.artifact,
   mcpServers: loadMcpServers(mcpServersSeed),
   workspacePath: loadWorkspacePath(),
   activeRunMode: undefined,
-  lastRunFilesWritten: undefined,
-  implementationChecklist: [],
+  lastRunFilesWritten: initialProgress.lastRunFilesWritten,
+  implementationChecklist: initialProgress.implementationChecklist,
+  lastBuild: initialProgress.lastBuild,
   liveFileActivity: [],
   queuedAgentQuestions: [],
   agentDialogMessages: [],
@@ -1252,6 +1467,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       persistAppSettings(appSettings);
       persistProjects(projects);
       const selection = ensureActiveSelection(projects, get().sessions, snapshot.activeProjectId);
+      const progress = selectionWithProgress(selection);
       persistActiveIds(selection.activeProjectId, selection.activeSessionId);
       set((state) => ({
         busy: false,
@@ -1263,6 +1479,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeProjectId: selection.activeProjectId,
         activeSessionId: selection.activeSessionId,
         session: selection.session,
+        artifact: progress.artifact,
+        implementationChecklist: progress.implementationChecklist,
+        lastRunFilesWritten: progress.lastRunFilesWritten,
+        lastBuild: progress.lastBuild,
         account: {
           ...state.account,
           sync: {
@@ -1346,7 +1566,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ? updateProviderMonitoring({
           ...provider,
           keyRef: provider.keyRef ?? "keychain://RamTeamAi/" + provider.id,
-          maskedKey: provider.maskedKey ?? "????",
+          maskedKey: provider.maskedKey ?? "\u043a\u043b\u044e\u0447 \u043d\u0430\u0439\u0434\u0435\u043d",
           status: "connected" as const,
         })
         : withProviderMonitoring(provider, provider);
@@ -1496,7 +1716,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProjectId: project.id,
       activeSessionId: session.id,
       session,
-      artifact: planArtifactSeed,
+      artifact: progressFromSession(session, project).artifact,
       implementationChecklist: [],
       lastBuild: undefined,
       lastRunFilesWritten: undefined,
@@ -1520,7 +1740,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProjectId: project.id,
       activeSessionId: guardedSession.id,
       session: guardedSession,
-      artifact: planArtifactSeed,
+      artifact: progressFromSession(guardedSession, project).artifact,
       implementationChecklist: [],
       lastBuild: undefined,
       lastRunFilesWritten: undefined,
@@ -1541,7 +1761,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProjectId: targetProjectId,
       activeSessionId: session.id,
       session,
-      artifact: planArtifactSeed,
+      artifact: progressFromSession(session, targetProject).artifact,
       implementationChecklist: [],
       lastBuild: undefined,
       lastRunFilesWritten: undefined,
@@ -1554,6 +1774,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const existingSession = findActiveSession(state.sessions, projectId);
     const session = existingSession ?? createPlaceholderSession(projectId);
     const sessions = state.sessions;
+    const progress = progressFromSession(session, project);
     persistSessions(sessions);
     persistActiveIds(projectId, existingSession?.id ?? "");
     return {
@@ -1561,6 +1782,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProjectId: projectId,
       activeSessionId: existingSession?.id ?? "",
       session,
+      ...progress,
     };
   }),
   selectSession: (sessionId) => set((state) => {
@@ -1568,11 +1790,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!session) return {};
     const project = state.projects.find((item) => item.id === session.projectId && !item.archivedAt);
     if (!project) return {};
+    const progress = progressFromSession(session, project);
     persistActiveIds(session.projectId, session.id);
     return {
       activeProjectId: session.projectId,
       activeSessionId: session.id,
       session,
+      ...progress,
     };
   }),
   archiveProject: (projectId) => set((state) => {
@@ -1592,7 +1816,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     persistProjects(selection.projects);
     persistSessions(selection.sessions);
     persistActiveIds(selection.activeProjectId, selection.activeSessionId);
-    return selection;
+    return selectionWithProgress(selection);
   }),
   archiveSession: (sessionId) => set((state) => {
     const targetSession = state.sessions.find((session) => session.id === sessionId && !session.archivedAt);
@@ -1609,7 +1833,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     persistProjects(selection.projects);
     persistSessions(selection.sessions);
     persistActiveIds(selection.activeProjectId, selection.activeSessionId);
-    return selection;
+    return selectionWithProgress(selection);
   }),
   restoreProject: (projectId) => set((state) => {
     const targetProject = state.projects.find((project) => project.id === projectId && project.archivedAt);
@@ -1621,7 +1845,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     persistProjects(selection.projects);
     persistSessions(selection.sessions);
     persistActiveIds(selection.activeProjectId, selection.activeSessionId);
-    return selection;
+    return selectionWithProgress(selection);
   }),
   restoreSession: (sessionId) => set((state) => {
     const targetSession = state.sessions.find((session) => session.id === sessionId && session.archivedAt);
@@ -1630,6 +1854,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const projects = state.projects.map((project) => project.id === targetSession.projectId ? { ...project, archivedAt: undefined, updatedAt } : project);
     const sessions = state.sessions.map((session) => session.id === sessionId ? { ...session, archivedAt: undefined } : session);
     const restoredSession = sessions.find((session) => session.id === sessionId) ?? targetSession;
+    const project = projects.find((item) => item.id === restoredSession.projectId);
+    const progress = progressFromSession(restoredSession, project);
     persistProjects(projects);
     persistSessions(sessions);
     persistActiveIds(restoredSession.projectId, restoredSession.id);
@@ -1639,6 +1865,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProjectId: restoredSession.projectId,
       activeSessionId: restoredSession.id,
       session: restoredSession,
+      ...progress,
     };
   }),
   clearArchiveMemory: () => set((state) => {
@@ -1648,8 +1875,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { ...session, messages: [], tokensUsed: 0 };
     });
     const activeSession = sessions.find((session) => session.id === state.activeSessionId) ?? state.session;
+    const activeProject = state.projects.find((project) => project.id === activeSession.projectId);
+    const progress = progressFromSession(activeSession, activeProject);
     persistSessions(sessions);
-    return { sessions, session: activeSession };
+    return { sessions, session: activeSession, ...progress };
   }),
   deleteArchive: () => set((state) => {
     const archivedProjectIds = new Set(state.projects.filter((project) => project.archivedAt).map((project) => project.id));
@@ -1659,11 +1888,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     persistProjects(selection.projects);
     persistSessions(selection.sessions);
     persistActiveIds(selection.activeProjectId, selection.activeSessionId);
-    return selection;
+    return selectionWithProgress(selection);
   }),
   setSessionMode: (mode) => set((state) => {
     if (!state.activeSessionId) return {};
-    const session = { ...state.session, mode };
+    const session = withSessionProgress(
+      { ...state.session, mode },
+      state.artifact,
+      state.implementationChecklist,
+      state.lastRunFilesWritten,
+      state.lastBuild,
+    );
     const sessions = replaceSession(state.sessions, session);
     persistSessions(sessions);
     return { session, sessions };
@@ -1763,7 +1998,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const stepsForRound = mode === "implementation"
       ? pendingImplementationSteps(get().artifact.steps, checklistForRound)
       : [];
-    const implementationAgentLimit = Math.max(1, Math.min(3, stepsForRound.length || 1));
+    const hasTesterAgent = agents.some((agent) => agent.role === "tester");
+    const needsQaAgent = hasTesterAgent || stepsForRound.some(isQaImplementationStep);
+    const implementationAgentLimit = Math.max(needsQaAgent ? 2 : 1, Math.min(3, stepsForRound.length || 1));
     const activeAgents = selectRunAgents(agents, {
       mode,
       topologyKind: topology.kind,
@@ -1810,13 +2047,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       })
       : [];
     const baseMessages = implementationIntroMessages.length ? [...initialBaseMessages, ...implementationIntroMessages] : initialBaseMessages;
-    const baseSession: SessionConfig = {
+    const baseSessionRaw: SessionConfig = {
       ...session,
       title: trimmedPrompt && isDefaultSessionTitle(session.title) ? derivedTitle : session.title,
       mode: nextMode,
       messages: baseMessages,
       tokensUsed: baseMessages.reduce((sum, message) => sum + message.tokens, 0),
     };
+    const baseSession = withSessionProgress(
+      baseSessionRaw,
+      get().artifact,
+      mode === "implementation" ? checklistForRound : get().implementationChecklist,
+      get().lastRunFilesWritten,
+      get().lastBuild,
+    );
     const nextSessions = replaceSession(sessions, baseSession);
     const nextProjects = projects.map((project) => project.id === activeProjectId
       ? {
@@ -1915,13 +2159,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         attempts = completion.attempts;
         const notice = fallbackNotice(attempts);
         if (notice) {
-          actions.push({ kind: "fallback", label: "Переключил модель", detail: notice });
+          actions.push({ kind: "fallback", label: "\u0421\u043c\u0435\u043d\u0430 \u043c\u043e\u0434\u0435\u043b\u0438", detail: notice });
         }
         text = notice ? notice + "\n\n" + completion.result.text : completion.result.text;
         tokens = Math.max(completion.result.tokens, Math.ceil(text.length / 4));
         latencyMs = completion.result.latencyMs;
         if (agent.tools.includes("mcp")) {
-          actions.push({ kind: "search", label: "Запрос через MCP" });
+          actions.push({ kind: "search", label: "\u0417\u0430\u043f\u0440\u043e\u0441 \u0447\u0435\u0440\u0435\u0437 MCP" });
         }
         if (mode === "implementation" && implementationRootPath) {
           const fileBlocks = extractWorkspaceFileBlocks(text);
@@ -1988,7 +2232,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           }
           tokens = Math.max(tokens, Math.ceil(text.length / 4));
         } else if (mode === "planning") {
-          actions.push({ kind: "plan", label: "Предложил план" });
+          actions.push({ kind: "plan", label: "\u0412\u043e\u043f\u0440\u043e\u0441 \u043a \u0433\u043b\u0430\u0432\u043d\u043e\u043c\u0443" });
         }
       } catch (error) {
         const staleCheckpoint = checkpointIsStale(checkpoint) || error instanceof AgentLeaseTimeoutError;
@@ -2049,7 +2293,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             const notice = fallbackNotice(attempts);
             const recoveryNotice = `🛟 Supervisor: ${agent.name} не ответил, задачу подхватил ${replacementAgent.name}.`;
             actions.push({ kind: "fallback", label: "Агент заменён", detail: recoveryNotice });
-            if (notice) actions.push({ kind: "fallback", label: "Переключил модель", detail: notice });
+            if (notice) actions.push({ kind: "fallback", label: "\u0421\u043c\u0435\u043d\u0430 \u043c\u043e\u0434\u0435\u043b\u0438", detail: notice });
             text = [recoveryNotice, notice, completion.result.text].filter(Boolean).join("\n\n");
             tokens = Math.max(completion.result.tokens, Math.ceil(text.length / 4));
             latencyMs = completion.result.latencyMs;
@@ -2171,12 +2415,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       set((state) => {
         const partialMessages = [...baseMessages, ...messages];
-        const partialSession: SessionConfig = {
+        const partialSessionRaw: SessionConfig = {
           ...state.session,
           mode: nextMode,
           messages: partialMessages,
           tokensUsed: partialMessages.reduce((sum, message) => sum + message.tokens, 0),
         };
+        const partialSession = withSessionProgress(
+          partialSessionRaw,
+          state.artifact,
+          state.implementationChecklist,
+          state.lastRunFilesWritten,
+          state.lastBuild,
+        );
         const partialSessions = replaceSession(state.sessions, partialSession);
         persistSessions(partialSessions);
         return {
@@ -2202,15 +2453,24 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...state.projectWorkTimers,
         [activeProjectId]: (state.projectWorkTimers[activeProjectId] ?? 0) + elapsedMs,
       };
-      const session: SessionConfig = {
+      const sessionRaw: SessionConfig = {
         ...state.session,
         mode: nextMode,
         messages: nextMessages,
         tokensUsed: nextMessages.reduce((sum, message) => sum + message.tokens, 0),
       };
-      const sessions = replaceSession(state.sessions, session);
       const plannedArtifact = mode === "planning" ? synthesizePlan(nextMessages, state.artifact) : undefined;
       const readinessStatus = finalReadiness?.status;
+      const finalArtifact = plannedArtifact
+        ? plannedArtifact
+        : mode === "implementation"
+          ? { ...state.artifact, status: artifactStatusAfterImplementationRound(readinessStatus) }
+          : state.artifact;
+      const finalLastRunFilesWritten = mode === "planning" ? undefined : mode === "implementation" ? totalFilesWritten : state.lastRunFilesWritten;
+      const finalChecklist = mode === "planning" ? [] : state.implementationChecklist;
+      const finalLastBuild = finalReadiness && state.lastBuild ? { ...state.lastBuild, readiness: finalReadiness } : state.lastBuild;
+      const session = withSessionProgress(sessionRaw, finalArtifact, finalChecklist, finalLastRunFilesWritten, finalLastBuild);
+      const sessions = replaceSession(state.sessions, session);
       const projects = mode === "implementation"
         ? state.projects.map((project) => project.id === activeProjectId ? { ...project, status: projectStatusAfterImplementationRound(readinessStatus), updatedAt: new Date().toISOString() } : project)
         : state.projects;
@@ -2222,18 +2482,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeRunMode: undefined,
         activeWorkStartedAt: undefined,
         projectWorkTimers,
-        lastRunFilesWritten: mode === "planning" ? undefined : mode === "implementation" ? totalFilesWritten : state.lastRunFilesWritten,
-        implementationChecklist: mode === "planning" ? [] : state.implementationChecklist,
-        lastBuild: finalReadiness && state.lastBuild ? { ...state.lastBuild, readiness: finalReadiness } : state.lastBuild,
+        lastRunFilesWritten: finalLastRunFilesWritten,
+        implementationChecklist: finalChecklist,
+        lastBuild: finalLastBuild,
         agents: state.agents.map((agent) => ({ ...agent, status: "done" })),
         projects,
         session,
         sessions,
-        artifact: plannedArtifact
-          ? plannedArtifact
-          : mode === "implementation"
-            ? { ...state.artifact, status: artifactStatusAfterImplementationRound(readinessStatus) }
-            : state.artifact,
+        artifact: finalArtifact,
       };
     });
     const nextQueuedQuestion = get().queuedAgentQuestions[0];
@@ -2255,7 +2511,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     // Seed the checklist from the plan so the UI shows pending items immediately.
     const initialChecklist = buildChecklist(get().artifact.steps);
-    set({ implementationChecklist: initialChecklist });
+    set((state) => {
+      const session = withSessionProgress(state.session, state.artifact, initialChecklist, state.lastRunFilesWritten, state.lastBuild);
+      const sessions = replaceSession(state.sessions, session);
+      persistSessions(sessions);
+      return { implementationChecklist: initialChecklist, session, sessions };
+    });
 
     set({ autoRunning: true });
     try {
@@ -2287,7 +2548,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         ? get().implementationChecklist
         : buildChecklist(get().artifact.steps);
       if (!checklistMatchesSteps(get().artifact.steps, get().implementationChecklist)) {
-        set({ implementationChecklist: initialChecklist });
+        set((state) => {
+          const session = withSessionProgress(state.session, state.artifact, initialChecklist, state.lastRunFilesWritten, state.lastBuild);
+          const sessions = replaceSession(state.sessions, session);
+          persistSessions(sessions);
+          return { implementationChecklist: initialChecklist, session, sessions };
+        });
       }
 
       let checklist = await get().verifyImplementationChecklist();
@@ -2316,7 +2582,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       const complete = checklistComplete(checklist);
       const summary = buildAutoImplementationSummary(checklist, stopReason, cap);
       set((state) => {
-        const session = withSystemMessage(state.session, summary);
+        const artifact = complete ? { ...state.artifact, status: "built" as const } : state.artifact;
+        const session = withSessionProgress(
+          withSystemMessage(state.session, summary),
+          artifact,
+          checklist,
+          state.lastRunFilesWritten,
+          state.lastBuild,
+        );
         const sessions = replaceSession(state.sessions, session);
         persistSessions(sessions);
         const projects = complete
@@ -2327,7 +2600,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           session,
           sessions,
           projects,
-          artifact: complete ? { ...state.artifact, status: "built" as const } : state.artifact,
+          implementationChecklist: checklist,
+          artifact,
         };
       });
     } finally {
@@ -2345,13 +2619,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     const trimmed = text.trim();
     if (!trimmed || get().busy || get().autoRunning || get().agentDialogBusy) return;
 
-    const { agents, providers, session, mcpServers, appSettings } = get();
-    const targetAgent = agents.find((agent) => agent.id === (targetAgentId || appSettings.operatorDefaultAgentId)) ?? agents[0];
+    const { agents, providers, session, mcpServers, appSettings, projects, activeProjectId, artifact } = get();
+    const projectQuestionMode = isProjectQuestionMode({ projects, activeProjectId, artifact });
+    const mainAgent = resolveMainAgent(agents, appSettings);
+    const requestedTargetAgent = projectQuestionMode
+      ? mainAgent
+      : agents.find((agent) => agent.id === (targetAgentId || appSettings.operatorDefaultAgentId));
+    const targetAgent = requestedTargetAgent ?? mainAgent ?? agents[0];
     if (!targetAgent) return;
 
     const now = new Date().toISOString();
     const visiblePrompt = `@${targetAgent.name}: ${trimmed}`;
-    const promptForModel = createOperatorPrompt(trimmed, targetAgent, appSettings);
+    const promptForModel = createOperatorPrompt(trimmed, targetAgent, appSettings, { projectQuestionMode });
     const userMessage: AgentDialogMessage = {
       id: "agent-dialog-user-" + Date.now(),
       author: "user",
@@ -2396,9 +2675,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       );
       attempts = completion.attempts;
       const notice = fallbackNotice(attempts);
-      if (notice) actions.push({ kind: "fallback", label: "?????????? ??????", detail: notice });
-      if (targetAgent.tools.includes("mcp")) actions.push({ kind: "search", label: "?????? ????? MCP" });
-      actions.push({ kind: "plan", label: "??????? ? ????????? ????" });
+      if (notice) actions.push({ kind: "fallback", label: "Смена модели", detail: notice });
+      if (targetAgent.tools.includes("mcp")) actions.push({ kind: "search", label: "\u0417\u0430\u043f\u0440\u043e\u0441 \u0447\u0435\u0440\u0435\u0437 MCP" });
+      actions.push({ kind: "plan", label: "Вопрос к главному" });
       answerText = notice ? notice + "\n\n" + completion.result.text : completion.result.text;
       tokens = Math.max(completion.result.tokens, Math.ceil(answerText.length / 4));
     } catch (error) {
@@ -2414,9 +2693,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           error: summarizeAttemptError(error),
         }));
       }
-      answerText = "?????? API: " + (error instanceof Error ? error.message : String(error));
+      answerText = "\u041e\u0448\u0438\u0431\u043a\u0430 API: " + (error instanceof Error ? error.message : String(error));
       tokens = Math.max(24, Math.ceil(answerText.length / 4));
-      actions.push({ kind: "error", label: "?????? API", detail: summarizeAttemptError(error) });
+      actions.push({ kind: "error", label: "\u041e\u0448\u0438\u0431\u043a\u0430 API", detail: summarizeAttemptError(error) });
     }
 
     if (attempts.length) {
@@ -2463,8 +2742,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   enqueueAgentQuestion: async (text, targetAgentId) => {
     const trimmed = text.trim();
     if (!trimmed || !get().activeSessionId) return;
-    const targetId = targetAgentId || get().appSettings.operatorDefaultAgentId;
-    const targetAgent = get().agents.find((agent) => agent.id === targetId);
+    const state = get();
+    const projectQuestionMode = isProjectQuestionMode({
+      projects: state.projects,
+      activeProjectId: state.activeProjectId,
+      artifact: state.artifact,
+    });
+    const mainAgent = resolveMainAgent(state.agents, state.appSettings);
+    const targetId = projectQuestionMode ? mainAgent?.id : targetAgentId || state.appSettings.operatorDefaultAgentId;
+    const targetAgent = state.agents.find((agent) => agent.id === targetId);
     if (get().busy || get().autoRunning || get().agentDialogBusy) {
       const question: QueuedAgentQuestion = {
         id: "queued-" + Date.now(),
@@ -2506,10 +2792,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       status: patch.status ?? (planChanged ? "draft" : state.artifact.status),
       edited: true,
     };
+    const implementationChecklist = stepsChanged ? buildChecklist(artifact.steps) : state.implementationChecklist;
+    const lastRunFilesWritten = planChanged ? undefined : state.lastRunFilesWritten;
+    const session = state.activeSessionId
+      ? withSessionProgress(state.session, artifact, implementationChecklist, lastRunFilesWritten, state.lastBuild)
+      : state.session;
+    const sessions = state.activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
+    if (state.activeSessionId) persistSessions(sessions);
     return {
       artifact,
-      implementationChecklist: stepsChanged ? buildChecklist(artifact.steps) : state.implementationChecklist,
-      lastRunFilesWritten: planChanged ? undefined : state.lastRunFilesWritten,
+      implementationChecklist,
+      lastRunFilesWritten,
+      session,
+      sessions,
     };
   }),
   selectWorkspaceFolder: async () => {
@@ -2565,12 +2860,20 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? { ...project, status: "scaffolded" as const, updatedAt: new Date().toISOString() }
           : project)
         : state.projects;
+      const nextArtifact = confirmed ? { ...state.artifact, status: "scaffolded" as const } : state.artifact;
+      const session = state.activeSessionId
+        ? withSessionProgress(state.session, nextArtifact, state.implementationChecklist, state.lastRunFilesWritten, result)
+        : state.session;
+      const sessions = state.activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
       if (confirmed) persistProjects(projects);
+      if (state.activeSessionId) persistSessions(sessions);
       return {
         busy: false,
         lastBuild: result,
         projects,
-        artifact: confirmed ? { ...state.artifact, status: "scaffolded" } : state.artifact,
+        artifact: nextArtifact,
+        session,
+        sessions,
       };
     });
   },
@@ -2601,7 +2904,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       persistProjects(projects);
 
       const intro = "🧱 Каркас проекта подготовлен. Шагов в плане: " + state.artifact.steps.length + "." + folderNote + assignmentText;
-      const session = activeSessionId ? withSystemMessage(state.session, intro) : state.session;
+      const nextArtifact = { ...state.artifact, status: "scaffolded" as const };
+      const session = activeSessionId
+        ? withSessionProgress(withSystemMessage(state.session, intro), nextArtifact, state.implementationChecklist, state.lastRunFilesWritten, result)
+        : state.session;
       const sessions = activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
       if (activeSessionId) persistSessions(sessions);
 
@@ -2611,14 +2917,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         projects,
         session,
         sessions,
-        artifact: { ...state.artifact, status: "scaffolded" as const },
+        artifact: nextArtifact,
       };
     });
   },
   startAgentImplementation: async () => {
     if (get().busy || !get().activeSessionId) return;
     if (!checklistMatchesSteps(get().artifact.steps, get().implementationChecklist)) {
-      set({ implementationChecklist: buildChecklist(get().artifact.steps) });
+      set((state) => {
+        const implementationChecklist = buildChecklist(state.artifact.steps);
+        const session = withSessionProgress(state.session, state.artifact, implementationChecklist, state.lastRunFilesWritten, state.lastBuild);
+        const sessions = replaceSession(state.sessions, session);
+        persistSessions(sessions);
+        return { implementationChecklist, session, sessions };
+      });
     }
 
     let { workspacePath } = get();
@@ -2654,7 +2966,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           ...state.projectWorkTimers,
           [state.activeProjectId]: (state.projectWorkTimers[state.activeProjectId] ?? 0) + elapsedMs,
         };
-        const session = withSystemMessage(state.session, savedNote);
+        const nextArtifact = { ...state.artifact, status: "scaffolded" as const };
+        const session = withSessionProgress(
+          withSystemMessage(state.session, savedNote),
+          nextArtifact,
+          state.implementationChecklist,
+          state.lastRunFilesWritten,
+          result,
+        );
         const sessions = replaceSession(state.sessions, session);
         const now = new Date().toISOString();
         const projects = state.projects.map((project) => project.id === state.activeProjectId
@@ -2699,7 +3018,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           projects,
           session,
           sessions,
-          artifact: { ...state.artifact, status: "scaffolded" as const },
+          artifact: nextArtifact,
         };
       });
 
@@ -2711,7 +3030,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       set((state) => {
         const text = "Ошибка запуска реализации: " + (error instanceof Error ? error.message : String(error));
-        const session = withSystemMessage(state.session, text);
+        const session = withSessionProgress(
+          withSystemMessage(state.session, text),
+          state.artifact,
+          state.implementationChecklist,
+          state.lastRunFilesWritten,
+          state.lastBuild,
+        );
         const sessions = replaceSession(state.sessions, session);
         persistSessions(sessions);
         return { busy: false, activeRunMode: undefined, activeWorkStartedAt: undefined, session, sessions };
@@ -2722,7 +3047,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { artifact, agents, providers, appSettings, workspacePath } = get();
     const steps = artifact.steps;
     if (!steps.length) {
-      set({ implementationChecklist: [] });
+      set((state) => {
+        const session = withSessionProgress(state.session, state.artifact, [], state.lastRunFilesWritten, state.lastBuild);
+        const sessions = replaceSession(state.sessions, session);
+        persistSessions(sessions);
+        return { implementationChecklist: [], session, sessions };
+      });
       return [];
     }
 
@@ -2770,7 +3100,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
 
-    set({ implementationChecklist: merged });
+    set((state) => {
+      const session = withSessionProgress(state.session, state.artifact, merged, state.lastRunFilesWritten, state.lastBuild);
+      const sessions = replaceSession(state.sessions, session);
+      persistSessions(sessions);
+      return { implementationChecklist: merged, session, sessions };
+    });
     return merged;
   },
 }));

@@ -59,6 +59,14 @@ export interface ProviderMonitoringConfig {
   requestCount: number;
   errorCount: number;
   tokensUsed: number;
+  quotaShortWindowId?: string;
+  quotaShortStartedAt?: string;
+  quotaShortRequestCount?: number;
+  quotaShortTokensUsed?: number;
+  quotaLongWindowId?: string;
+  quotaLongStartedAt?: string;
+  quotaLongRequestCount?: number;
+  quotaLongTokensUsed?: number;
   healthStatus?: ProviderHealthStatus;
   consecutiveFailures?: number;
   circuitOpenUntil?: string;
@@ -203,7 +211,22 @@ export interface SessionConfig {
   tokenBudget: number;
   tokensUsed: number;
   messages: ChatMessage[];
+  artifact?: PlanArtifact;
+  implementationChecklist?: SavedImplementationChecklistItem[];
+  lastRunFilesWritten?: number;
+  lastBuild?: BuildResult;
   archivedAt?: string;
+}
+
+export type SavedChecklistSource = "verifier" | "heuristic" | "pending";
+
+export interface SavedImplementationChecklistItem {
+  id: string;
+  index: number;
+  step: string;
+  done: boolean;
+  source: SavedChecklistSource;
+  note?: string;
 }
 
 export interface TopologyConfig {

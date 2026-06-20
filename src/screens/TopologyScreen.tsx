@@ -41,10 +41,38 @@ const topologyArt: Record<TopologyKind, ReactNode> = {
   ),
 };
 
-const cards: Array<{ kind: TopologyKind; title: string; text: string }> = [
-  { kind: "supervisor", title: "Supervisor", text: "Supervisor делегирует подзадачи суб-агентам" },
-  { kind: "debate", title: "Debate", text: "Peer debate: спор, критика и консенсус" },
-  { kind: "pipeline", title: "Pipeline", text: "Выход одного агента становится входом следующего" },
+const cards: Array<{
+  kind: TopologyKind;
+  title: string;
+  text: string;
+  bestFor: string[];
+  avoidFor: string;
+  guide: string;
+}> = [
+  {
+    kind: "supervisor",
+    title: "Supervisor",
+    text: "Supervisor делегирует подзадачи суб-агентам",
+    bestFor: ["больших задач с несколькими независимыми направлениями", "исследования, дизайна, реализации и проверки в одной сессии", "быстрого распределения ролей между агентами"],
+    avoidFor: "хуже подходит для линейных задач, где каждый шаг должен строго ждать предыдущий.",
+    guide: "Выберите Supervisor, когда нужен координатор: он дробит цель на подзадачи, назначает исполнителей и собирает итоговое решение.",
+  },
+  {
+    kind: "debate",
+    title: "Debate",
+    text: "Peer debate: спор, критика и консенсус",
+    bestFor: ["планирования архитектуры и выбора подхода", "поиска рисков, слабых мест и альтернатив", "задач, где важна проверка аргументов перед реализацией"],
+    avoidFor: "не лучший выбор для срочных одношаговых правок: обсуждение добавляет раунды и время.",
+    guide: "Выберите Debate, когда качество решения важнее скорости: агенты спорят, критикуют варианты и приходят к более устойчивому плану.",
+  },
+  {
+    kind: "pipeline",
+    title: "Pipeline",
+    text: "Выход одного агента становится входом следующего",
+    bestFor: ["пошаговых процессов: анализ → план → реализация → ревью", "документов, релизов и задач с понятной последовательностью", "сценариев, где важна трассируемость каждого этапа"],
+    avoidFor: "хуже подходит для параллельного исследования: слабый ранний шаг может повлиять на всю цепочку.",
+    guide: "Выберите Pipeline, когда работа должна идти конвейером: каждый агент получает результат предыдущего и улучшает его на своём этапе.",
+  },
 ];
 
 export function TopologyScreen() {
@@ -53,6 +81,7 @@ export function TopologyScreen() {
   const setTopology = useAppStore((state) => state.setTopology);
   const startTeam = useAppStore((state) => state.startTeam);
   const busy = useAppStore((state) => state.busy);
+  const selectedCard = cards.find((card) => card.kind === topology.kind) ?? cards[0];
 
   return (
     <div className="screen-stack">
@@ -67,6 +96,25 @@ export function TopologyScreen() {
           </button>
         ))}
       </div>
+      <section className="topology-guide" aria-live="polite">
+        <div>
+          <Chip tone="info">Гайд</Chip>
+          <h3>{selectedCard.title}: когда выбирать</h3>
+          <p>{selectedCard.guide}</p>
+        </div>
+        <div className="topology-guide-grid">
+          <div>
+            <b>Лучше всего подходит для</b>
+            <ul>
+              {selectedCard.bestFor.map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          </div>
+          <div>
+            <b>Когда выбрать другую топологию</b>
+            <p>{selectedCard.avoidFor}</p>
+          </div>
+        </div>
+      </section>
       <div className="topology-controls">
         <label>Макс. раундов<input type="number" min={1} max={20} value={topology.maxRounds} onChange={(event) => setTopology({ maxRounds: Number(event.target.value) })} /></label>
         <label>Арбитр<select value={topology.arbiterAgentId} onChange={(event) => setTopology({ arbiterAgentId: event.target.value })}>{agents.map((agent) => <option value={agent.id} key={agent.id}>{agent.name}</option>)}</select></label>

@@ -17,7 +17,12 @@ function verifyVirtualWorkspace(planSteps: string[], workspace: VirtualWorkspace
   return heuristicChecklist(planSteps, workspace.files, "scaffold-ok", workspace.contents);
 }
 
-function simulateAutoImplementation(planSteps: string[], workspacesAfterRounds: VirtualWorkspace[], cap: number) {
+function simulateAutoImplementation(
+  planSteps: string[],
+  workspacesAfterRounds: VirtualWorkspace[],
+  cap: number,
+  filesWrittenAfterRounds: number[] = workspacesAfterRounds.map(() => 1),
+) {
   let previous = buildChecklist(planSteps);
   let checklistState = previous;
   let stalledRounds = 0;
@@ -40,7 +45,8 @@ function simulateAutoImplementation(planSteps: string[], workspacesAfterRounds: 
 
     const workspace = workspacesAfterRounds[Math.min(roundsRun, workspacesAfterRounds.length - 1)];
     checklistState = verifyVirtualWorkspace(planSteps, workspace);
-    stalledRounds = nextStalledRounds(previous, checklistState, 1, stalledRounds);
+    const filesWritten = filesWrittenAfterRounds[Math.min(roundsRun, filesWrittenAfterRounds.length - 1)] ?? 0;
+    stalledRounds = nextStalledRounds(previous, checklistState, filesWritten, stalledRounds);
     previous = checklistState;
     roundsRun += 1;
     if (checklistComplete(checklistState)) {
@@ -75,7 +81,7 @@ describe("decideAutoRound", () => {
     })).toEqual({ action: "stop", reason: "complete" });
   });
 
-  it("stops after repeated no-progress rounds", () => {
+  it("keeps running after repeated no-progress rounds until the safety cap", () => {
     expect(decideAutoRound({
       checklist: checklist([0]),
       round: 2,
@@ -83,7 +89,7 @@ describe("decideAutoRound", () => {
       stalledRounds: 3,
       autoMode: true,
       busy: false,
-    })).toEqual({ action: "stop", reason: "stalled" });
+    })).toEqual({ action: "run" });
   });
 
   it("stops at the configured cap", () => {
@@ -99,8 +105,8 @@ describe("decideAutoRound", () => {
 });
 
 describe("nextStalledRounds", () => {
-  it("does not reset for file rewrites without checklist progress", () => {
-    expect(nextStalledRounds(checklist([0]), checklist([0]), 1, 2)).toBe(3);
+  it("resets when a round wrote files even before checklist verification catches up", () => {
+    expect(nextStalledRounds(checklist([0]), checklist([0]), 1, 2)).toBe(0);
   });
 
   it("resets when checklist progress advanced", () => {
@@ -120,7 +126,7 @@ describe("buildAutoImplementationSummary", () => {
   it("reports remaining items and stop reason", () => {
     const summary = buildAutoImplementationSummary(checklist([0]), "stalled", 4);
     expect(summary).toContain("выполнено 1 из 2");
-    expect(summary).toContain("три раунда подряд");
+    expect(summary).toContain("повторные раунды");
     expect(summary).toContain("Подключить Tailwind");
   });
 });
@@ -174,7 +180,7 @@ describe("auto implementation e2e simulation", () => {
     expect(buildAutoImplementationSummary(result.checklist, "complete", 4)).toContain("✅ Готово");
   });
 
-  it("stops as stalled when agents keep rewriting files without closing checklist items", () => {
+  it("keeps running while agents are still writing files and stops at the cap if verification never catches up", () => {
     const missingDependencyForever: VirtualWorkspace = {
       files: ["package.json", "tsconfig.json", "vite.config.ts", "src/main.tsx", "src/App.tsx"],
       contents: {
@@ -188,11 +194,35 @@ describe("auto implementation e2e simulation", () => {
 
     const result = simulateAutoImplementation(landingSteps, [missingDependencyForever, missingDependencyForever, missingDependencyForever, missingDependencyForever], 6);
 
-    expect(result.stopReason).toBe("stalled");
-    // Round 1 closes the scaffold/App item; then 3 consecutive no-progress
-    // rewrites trigger stalled.
-    expect(result.roundsRun).toBe(4);
+    expect(result.stopReason).toBe("limit");
+    expect(result.roundsRun).toBe(5);
+    expect(result.stalledRounds).toBe(0);
     expect(checklistComplete(result.checklist)).toBe(false);
-    expect(buildAutoImplementationSummary(result.checklist, "stalled", 6)).toContain("три раунда подряд");
+    expect(buildAutoImplementationSummary(result.checklist, "limit", 6)).toContain("лимит 6");
+  });
+
+  it("continues through quiet rounds and returns the remaining checklist only at the cap", () => {
+    const missingDependencyForever: VirtualWorkspace = {
+      files: ["package.json", "tsconfig.json", "vite.config.ts", "src/main.tsx", "src/App.tsx"],
+      contents: {
+        "package.json": JSON.stringify({ dependencies: { react: "latest", "react-dom": "latest" }, devDependencies: { vite: "latest", typescript: "latest" } }),
+        "tsconfig.json": "{}",
+        "vite.config.ts": "import { defineConfig } from \"vite\";",
+        "src/main.tsx": "import \"./index.css\";",
+        "src/App.tsx": "export default function App() { return <main>Same stale state</main>; }",
+      },
+    };
+
+    const result = simulateAutoImplementation(
+      landingSteps,
+      [missingDependencyForever, missingDependencyForever, missingDependencyForever, missingDependencyForever],
+      6,
+      [0, 0, 0, 0],
+    );
+
+    expect(result.stopReason).toBe("limit");
+    expect(result.roundsRun).toBe(5);
+    expect(checklistComplete(result.checklist)).toBe(false);
+    expect(buildAutoImplementationSummary(result.checklist, "limit", 6)).toContain("чеклист правок");
   });
 });

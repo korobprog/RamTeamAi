@@ -6,7 +6,8 @@ import { TeamThinking } from "../components/TeamThinking";
 import { DebateSummary } from "../components/DebateSummary";
 import { describeMcpHealth, listAvailableTools } from "../mcp/manager";
 import { useAppStore } from "../store/appStore";
-import type { AgentDialogMessage, AgentRole, ChatMessage, MessageAction, MessageActionKind } from "../types";
+import { formatLimitAmount, getProviderLimitSnapshot, providerAccessLabel, providerHasApiAccess, providerWorks } from "../providers/limits";
+import type { AgentDialogMessage, AgentRole, ChatMessage, MessageAction, MessageActionKind, ProviderConfig } from "../types";
 
 const COLLAPSE_LIMIT = 360;
 type LibraryView = "chat" | "projects" | "sessions" | "archive";
@@ -85,6 +86,107 @@ function formatWorkDuration(ms: number): string {
   return `${seconds}с`;
 }
 
+function formatLimitReset(iso: string, now: number): string {
+  const diffMs = Date.parse(iso) - now;
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return "скоро";
+  const totalMinutes = Math.ceil(diffMs / 60_000);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return days + "д " + hours + "ч";
+  if (hours > 0) return hours + "ч " + minutes.toString().padStart(2, "0") + "м";
+  return minutes + "м";
+}
+
+function providerAccessTone(provider: ProviderConfig): "ok" | "warn" | "muted" {
+  if (!providerHasApiAccess(provider)) return "muted";
+  return providerWorks(provider) ? "ok" : "warn";
+}
+
+function ComposerLimitBar({
+  provider,
+  providers,
+  expanded,
+  now,
+  onToggle,
+  onOpenProviders,
+}: {
+  provider?: ProviderConfig;
+  providers: ProviderConfig[];
+  expanded: boolean;
+  now: number;
+  onToggle: () => void;
+  onOpenProviders: () => void;
+}) {
+  if (!provider) return null;
+  const windows = getProviderLimitSnapshot(provider, now);
+  const primary = windows[0];
+  const accessTone = providerAccessTone(provider);
+  const hasAccess = providerHasApiAccess(provider);
+  const keyedProviders = providers.filter(providerHasApiAccess);
+  const workingCount = keyedProviders.filter(providerWorks).length;
+  const barStyle = primary ? { width: hasAccess ? `${primary.remainingPercent}%` : "0%" } : undefined;
+
+  return (
+    <div className={"composer-limit-panel" + (expanded ? " open" : "")}>
+      <div className="composer-limit-summary">
+        <div className="composer-limit-copy">
+          <span className={"provider-mini-dot " + accessTone} aria-hidden="true" />
+          <strong>{provider.name}</strong>
+          <span>{!hasAccess ? "нет ключа · лимит не активен" : primary ? `${primary.label}: осталось ${formatLimitAmount(primary.tokenRemaining)} ток.` : providerAccessLabel(provider)}</span>
+        </div>
+        {primary ? (
+          <div className={"composer-limit-meter" + (hasAccess ? "" : " inactive")} title="Локальный счётчик по запросам приложения; точные лимиты зависят от тарифа провайдера.">
+            <span style={barStyle} />
+          </div>
+        ) : (
+          <div className="composer-limit-meter unlimited" title="Локальный провайдер без API-ключа и внешнего лимита.">
+            <span />
+          </div>
+        )}
+        <span className="composer-limit-reset">{!hasAccess ? "добавьте ключ" : primary ? "сброс " + formatLimitReset(primary.resetsAt, now) : "без внешнего API"}</span>
+        <button className="mini-action ghosty" type="button" onClick={onToggle} aria-expanded={expanded} title={expanded ? "Скрыть лимиты" : "Показать длинные лимиты и провайдеры"}>
+          <i className={"ti ti-" + (expanded ? "chevron-up" : "chevron-down")} aria-hidden="true" />
+        </button>
+      </div>
+
+      {expanded ? (
+        <div className="composer-limit-details">
+          <div className="composer-limit-windows">
+            {windows.length ? windows.map((window) => (
+              <div className="composer-limit-window" key={window.id}>
+                <div>
+                  <b>{window.label}</b>
+                  <small>сброс через {formatLimitReset(window.resetsAt, now)}</small>
+                </div>
+                <span>{formatLimitAmount(window.tokenRemaining)} ток. · {window.requestRemaining} req</span>
+              </div>
+            )) : (
+              <div className="composer-limit-window">
+                <div>
+                  <b>Локально</b>
+                  <small>лимит задаёт только ваша машина</small>
+                </div>
+                <span>∞</span>
+              </div>
+            )}
+          </div>
+          <div className="composer-provider-strip" aria-label="Доступные API провайдеры">
+            <span className="provider-strip-summary">{workingCount}/{providers.length} API работают</span>
+            {providers.map((item) => (
+              <span className={"provider-strip-pill " + providerAccessTone(item)} key={item.id} title={providerAccessLabel(item)}>
+                <span className={"provider-mini-dot " + providerAccessTone(item)} aria-hidden="true" />
+                {item.name}
+              </span>
+            ))}
+            <button className="provider-strip-manage" type="button" onClick={onOpenProviders}>Настроить</button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function ChatScreen() {
   const [prompt, setPrompt] = useState("");
   const [selectingWorkspace, setSelectingWorkspace] = useState(false);
@@ -97,6 +199,7 @@ export function ChatScreen() {
   const [nowTick, setNowTick] = useState(Date.now());
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+  const [limitsExpanded, setLimitsExpanded] = useState(false);
   const agents = useAppStore((state) => state.agents);
   const providers = useAppStore((state) => state.providers);
   const projects = useAppStore((state) => state.projects);
@@ -110,6 +213,7 @@ export function ChatScreen() {
   const startAgentImplementation = useAppStore((state) => state.startAgentImplementation);
   const enqueueAgentQuestion = useAppStore((state) => state.enqueueAgentQuestion);
   const clearQueuedAgentQuestion = useAppStore((state) => state.clearQueuedAgentQuestion);
+  const runAgentDialogQuestion = useAppStore((state) => state.runAgentDialogQuestion);
   const appSettings = useAppStore((state) => state.appSettings);
   const setAppSettings = useAppStore((state) => state.setAppSettings);
   const autoRunning = useAppStore((state) => state.autoRunning);
@@ -166,13 +270,22 @@ export function ChatScreen() {
   const checklistCurrent = implementationChecklist.length === artifact.steps.length && artifact.steps.every((step, index) => implementationChecklist[index]?.step === step);
   const checklistDone = checklistCurrent && implementationChecklist.length > 0 && implementationChecklist.every((item) => item.done);
   const implementationComplete = artifact.status === "built" || checklistDone;
+  const projectQuestionMode = canChat && implementationComplete;
   const canRunImplementation = canChat && hasUserTask && artifact.status === "scaffolded" && !implementationComplete;
   const implementationStarted = canRunImplementation && session.mode !== "planning" && agentMessages.length > 0;
   const latestSystemMessage = [...session.messages].reverse().find((message) => message.author === "system");
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const agentDialogListRef = useRef<HTMLDivElement | null>(null);
-  const selectedQuestionAgentId = agentQuestionTargetId || appSettings.operatorDefaultAgentId || agents[0]?.id || "";
+  const mainQuestionAgentId = agents.find((agent) => agent.id === appSettings.operatorDefaultAgentId)?.id
+    ?? agents.find((agent) => agent.role === "architect")?.id
+    ?? agents[0]?.id
+    ?? "";
+  const selectedQuestionAgentId = projectQuestionMode ? mainQuestionAgentId : agentQuestionTargetId || mainQuestionAgentId;
   const activeDialogAgent = agents.find((agent) => agent.id === (agentDialogAgentId || selectedQuestionAgentId));
+  const selectedQuestionAgent = agents.find((agent) => agent.id === selectedQuestionAgentId);
+  const selectedQuestionProvider = providers.find((provider) => provider.id === selectedQuestionAgent?.providerId)
+    ?? providers.find(providerHasApiAccess)
+    ?? providers[0];
   const activeElapsedMs = activeWorkStartedAt ? Math.max(0, nowTick - Date.parse(activeWorkStartedAt)) : 0;
   const projectWorkMs = (projectWorkTimers[activeProjectId] ?? 0) + activeElapsedMs;
   const visibleCheckpoints = agentRunCheckpoints.slice(-4).reverse();
@@ -208,12 +321,17 @@ export function ChatScreen() {
     const value = prompt.trim();
     if (!value || !canChat) return;
     setPrompt("");
+    const questionTargetId = projectQuestionMode ? mainQuestionAgentId : selectedQuestionAgentId;
     if (busy || autoRunning || agentDialogBusy) {
-      await enqueueAgentQuestion(value, selectedQuestionAgentId);
+      await enqueueAgentQuestion(value, questionTargetId);
       return;
     }
     if (initCommandPattern.test(value)) {
       await initWorkspace(true);
+      return;
+    }
+    if (projectQuestionMode) {
+      await runAgentDialogQuestion(value, mainQuestionAgentId);
       return;
     }
     if (appSettings.autoMode) {
@@ -598,6 +716,12 @@ export function ChatScreen() {
             Авто-режим: команда идёт от плана к коду без подтверждений. Можно выключить тумблером «Авто».
           </div>
         ) : null}
+        {projectQuestionMode && !autoRunning ? (
+          <div className="project-qa-banner">
+            <i className="ti ti-message-question" aria-hidden="true" />
+            Проект завершён: новые сообщения идут как вопросы по проекту. Отвечает только главный агент, команда и запись кода не запускаются.
+          </div>
+        ) : null}
         {latestSystemMessage ? (
           <div className="pinned-system-message">
             <span>{"\u0421\u0438\u0441\u0442\u0435\u043c\u0430"}</span>
@@ -792,29 +916,37 @@ export function ChatScreen() {
         <form className="composer" onSubmit={(event) => void submitPrompt(event)}>
           <div className="composer-main">
             <div className="composer-topline">
-              <span className="composer-kicker">{"\u0417\u0430\u0434\u0430\u0447\u0430 \u0434\u043b\u044f \u043a\u043e\u043c\u0430\u043d\u0434\u044b"}</span>
+              <span className="composer-kicker">{projectQuestionMode ? "Вопрос по готовому проекту" : "\u0417\u0430\u0434\u0430\u0447\u0430 \u0434\u043b\u044f \u043a\u043e\u043c\u0430\u043d\u0434\u044b"}</span>
               <span className="composer-hint">{"Enter \u2014 \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u00b7 Shift+Enter \u2014 \u043d\u043e\u0432\u0430\u044f \u0441\u0442\u0440\u043e\u043a\u0430"}</span>
             </div>
+            <ComposerLimitBar
+              provider={selectedQuestionProvider}
+              providers={providers}
+              expanded={limitsExpanded}
+              now={nowTick}
+              onToggle={() => setLimitsExpanded((value) => !value)}
+              onOpenProviders={() => setScreen("providers")}
+            />
             <div className="composer-input-row">
               <div className="agent-target-box">
                 <select
                   aria-label="\u041a\u043e\u043c\u0443 \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c \u0432\u043e\u043f\u0440\u043e\u0441"
                   className="agent-target-select"
-                  disabled={!canChat}
+                  disabled={!canChat || projectQuestionMode}
                   value={selectedQuestionAgentId}
                   onChange={(event) => setAgentQuestionTargetId(event.target.value)}
-                  title={busy || autoRunning || agentDialogBusy ? "\u0412\u043e\u043f\u0440\u043e\u0441 \u043f\u043e\u043f\u0430\u0434\u0451\u0442 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u044c \u0438 \u043e\u0442\u043a\u0440\u043e\u0435\u0442\u0441\u044f \u0432 \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u043e\u043c \u0447\u0430\u0442\u0435 \u0430\u0433\u0435\u043d\u0442\u0430" : "\u041a\u043e\u043c\u0443 \u0430\u0434\u0440\u0435\u0441\u043e\u0432\u0430\u0442\u044c \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0443\u044e \u0440\u0435\u043f\u043b\u0438\u043a\u0443"}
+                  title={projectQuestionMode ? "Проект завершён: вопросы принимает только главный агент" : busy || autoRunning || agentDialogBusy ? "\u0412\u043e\u043f\u0440\u043e\u0441 \u043f\u043e\u043f\u0430\u0434\u0451\u0442 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u044c \u0438 \u043e\u0442\u043a\u0440\u043e\u0435\u0442\u0441\u044f \u0432 \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u043e\u043c \u0447\u0430\u0442\u0435 \u0430\u0433\u0435\u043d\u0442\u0430" : "\u041a\u043e\u043c\u0443 \u0430\u0434\u0440\u0435\u0441\u043e\u0432\u0430\u0442\u044c \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0443\u044e \u0440\u0435\u043f\u043b\u0438\u043a\u0443"}
                 >
                   {agents.map((agent) => (
                     <option key={agent.id} value={agent.id}>{agentDisplayName(agent, appSettings.operatorDefaultAgentId)}</option>
                   ))}
                 </select>
-                <span>{"\u0417\u0430\u0434\u0430\u0439 \u0432\u043e\u043f\u0440\u043e\u0441"}</span>
+                <span>{projectQuestionMode ? "Отвечает главный" : "\u0417\u0430\u0434\u0430\u0439 \u0432\u043e\u043f\u0440\u043e\u0441"}</span>
               </div>
               <textarea
-                aria-label="\u0417\u0430\u0434\u0430\u0447\u0430 \u0434\u043b\u044f \u043a\u043e\u043c\u0430\u043d\u0434\u044b"
+                aria-label={projectQuestionMode ? "Вопрос по готовому проекту" : "\u0417\u0430\u0434\u0430\u0447\u0430 \u0434\u043b\u044f \u043a\u043e\u043c\u0430\u043d\u0434\u044b"}
                 disabled={!canChat}
-                placeholder={canChat ? busy || autoRunning || agentDialogBusy ? "\u0412\u043e\u043f\u0440\u043e\u0441 \u0430\u0433\u0435\u043d\u0442\u0443 \u043f\u043e\u043f\u0430\u0434\u0451\u0442 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u044c \u0438 \u043e\u0442\u043a\u0440\u043e\u0435\u0442\u0441\u044f \u0441\u043f\u0440\u0430\u0432\u0430\u2026" : "\u0417\u0430\u0434\u0430\u0447\u0430 \u0434\u043b\u044f \u043a\u043e\u043c\u0430\u043d\u0434\u044b\u2026 \u0438\u043b\u0438 /init" : "\u0421\u043d\u0430\u0447\u0430\u043b\u0430 \u0441\u043e\u0437\u0434\u0430\u0439\u0442\u0435 \u0430\u043a\u0442\u0438\u0432\u043d\u0443\u044e \u0441\u0435\u0441\u0441\u0438\u044e"}
+                placeholder={canChat ? projectQuestionMode ? "Спросите о готовом проекте — ответит только главный агент…" : busy || autoRunning || agentDialogBusy ? "\u0412\u043e\u043f\u0440\u043e\u0441 \u0430\u0433\u0435\u043d\u0442\u0443 \u043f\u043e\u043f\u0430\u0434\u0451\u0442 \u0432 \u043e\u0447\u0435\u0440\u0435\u0434\u044c \u0438 \u043e\u0442\u043a\u0440\u043e\u0435\u0442\u0441\u044f \u0441\u043f\u0440\u0430\u0432\u0430\u2026" : "\u0417\u0430\u0434\u0430\u0447\u0430 \u0434\u043b\u044f \u043a\u043e\u043c\u0430\u043d\u0434\u044b\u2026 \u0438\u043b\u0438 /init" : "\u0421\u043d\u0430\u0447\u0430\u043b\u0430 \u0441\u043e\u0437\u0434\u0430\u0439\u0442\u0435 \u0430\u043a\u0442\u0438\u0432\u043d\u0443\u044e \u0441\u0435\u0441\u0441\u0438\u044e"}
                 rows={3}
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
@@ -823,7 +955,7 @@ export function ChatScreen() {
             </div>
           </div>
           <div className="composer-actions">
-            <button className="primary" type="submit" disabled={!prompt.trim() || !canChat}>{busy || autoRunning || agentDialogBusy ? "\u0412 \u043e\u0447\u0435\u0440\u0435\u0434\u044c" : "\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c"}</button>
+            <button className="primary" type="submit" disabled={!prompt.trim() || !canChat}>{busy || autoRunning || agentDialogBusy ? (projectQuestionMode ? "В очередь к главному" : "\u0412 \u043e\u0447\u0435\u0440\u0435\u0434\u044c") : projectQuestionMode ? "Спросить" : "\u041e\u0442\u043f\u0440\u0430\u0432\u0438\u0442\u044c"}</button>
             <button type="button" onClick={() => setScreen("build")}>{"\u041a \u0440\u0435\u0448\u0435\u043d\u0438\u044e"}</button>
           </div>
         </form>

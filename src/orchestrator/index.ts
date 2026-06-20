@@ -220,16 +220,49 @@ function normalizeTechLabel(item: string): string {
 
 function buildSteps(messages: ChatMessage[], title: string, stack: string[]): string[] {
   const extracted = extractExplicitSteps(messages);
-  if (extracted.length >= 2) return extracted.slice(0, 8);
+  if (extracted.length >= 2) return ensureTestingStep(extracted, stack);
 
   const mainTech = stack[0] ?? "выбранном стеке";
-  return [
+  return ensureTestingStep([
     `Зафиксировать цель, аудиторию, ограничения и критерии готовности для «${title}»`,
     `Согласовать архитектуру и стек: ${stack.slice(0, 4).join(", ") || mainTech}`,
     `Собрать минимальный рабочий каркас на ${mainTech} с навигацией и базовыми состояниями`,
     "Подключить данные, формы, интеграции и обработку ошибок только для нужных сценариев",
     "Проверить UX, адаптивность, безопасность конфигурации и сценарии запуска",
-  ];
+  ], stack);
+}
+
+function ensureTestingStep(steps: string[], stack: string[]): string[] {
+  const limited = steps.slice(0, 8);
+  if (limited.some(isAutomatedTestingStep)) return limited;
+  const base = limited.length >= 8 ? limited.slice(0, 7) : limited;
+  return [...base, testingStepForStack(stack)];
+}
+
+function isAutomatedTestingStep(step: string): boolean {
+  return /(?:auto[-\s]?tests?|tests?|testing|vitest|jest|playwright|pytest|unit|integration|e2e|spec|С‚РµСЃС‚|тест)/i.test(step);
+}
+
+function testingStepForStack(stack: string[]): string {
+  const normalized = stack.map((item) => item.toLowerCase());
+  const hasReactUi = normalized.some((item) => item.includes("react") || item.includes("vite") || item.includes("next"));
+  const hasNode = normalized.some((item) => item.includes("node") || item.includes("express") || item.includes("fastify") || item.includes("nestjs"));
+  const hasPython = normalized.some((item) => item.includes("python") || item.includes("fastapi") || item.includes("django") || item.includes("flask"));
+  const hasRust = normalized.some((item) => item.includes("rust") || item.includes("tauri"));
+
+  if (hasReactUi) {
+    return "Create stack-matched automated tests in package.json and tests/App.test.tsx (Vitest + React Testing Library) and make npm test runnable";
+  }
+  if (hasNode) {
+    return "Create stack-matched automated tests in package.json and tests/app.test.ts (Vitest for TypeScript/Node) and make npm test runnable";
+  }
+  if (hasPython) {
+    return "Create stack-matched automated tests in tests/test_app.py (pytest) and document the test command";
+  }
+  if (hasRust) {
+    return "Create stack-matched automated tests in tests/app.rs (cargo test) and document the test command";
+  }
+  return "Create stack-matched automated tests in tests/app.test.ts and document the test command";
 }
 
 function extractExplicitSteps(messages: ChatMessage[]): string[] {
