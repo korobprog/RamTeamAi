@@ -75,6 +75,7 @@ export function BuildScreen() {
   const activeRunMode = useAppStore((state) => state.activeRunMode);
   const checklist = useAppStore((state) => state.implementationChecklist);
   const busy = useAppStore((state) => state.busy);
+  const setScreen = useAppStore((state) => state.setScreen);
   const isLegacyDemoPlan = artifact.steps.some((step) => step.includes("Universal Connector") || step.includes("Orchestrator"))
     && artifact.stack.some((item) => item.includes("Tauri") || item.includes("Zustand"));
   const hasDecision = !isLegacyDemoPlan && artifact.steps.length > 0;
@@ -335,6 +336,19 @@ export function BuildScreen() {
           </button>
           {!scaffoldReady && hasDecision ? <small className="small-muted">{text.noScaffoldHint}</small> : null}
         </div>
+
+        {implementationDone ? (
+          <div className="post-build-cta">
+            <div>
+              <div className="mini-label">Точечные правки</div>
+              <b>Проект готов к режиму доработки</b>
+              <p className="small-muted">Откройте split-screen с чатом, live-preview, inspector toolce, терминалом, логами и картой проекта.</p>
+            </div>
+            <button className="primary wide" type="button" onClick={() => setScreen("workbench")}>
+              <i className="ti ti-tools" aria-hidden="true" /> Перейти к правкам
+            </button>
+          </div>
+        ) : null}
 
         <div className="panel-title spaced">{text.assignments}</div>
         <div className="assignment-list">

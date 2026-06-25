@@ -835,6 +835,18 @@ export function ChatScreen() {
           {!busy && showDebateSummary ? (
             <DebateSummary artifact={artifact} roles={debateRoles} onGoToBuild={() => setScreen("build")} />
           ) : null}
+          {!busy && implementationComplete ? (
+            <div className="post-build-cta chat-post-build-cta">
+              <div>
+                <div className="mini-label">Точечные правки после сборки</div>
+                <b>Откройте workbench готового проекта</b>
+                <p className="small-muted">Слева будет чат, справа live-preview с инспектором DOM, снизу терминал и логи ошибок.</p>
+              </div>
+              <button className="primary wide" type="button" onClick={() => setScreen("workbench")}>
+                <i className="ti ti-tools" aria-hidden="true" /> Перейти к правкам
+              </button>
+            </div>
+          ) : null}
           {!busy && !autoRunning && !appSettings.autoMode && canRunImplementation ? (
             <div className="chat-implementation-cta pulse-cta">
               <b>{implementationStarted ? "Реализация идёт — это не сброс плана" : "Дальше — запустить работу агентов"}</b>
