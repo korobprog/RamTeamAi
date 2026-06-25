@@ -20,6 +20,7 @@ const nav: Array<{ id: ScreenId; label: string }> = [
   { id: "topology", label: "Топология" },
   { id: "chat", label: "Диалог" },
   { id: "build", label: "Решение" },
+  { id: "workbench", label: "Правки" },
 ];
 
 export function FRamTeamAie({ children }: { children: ReactNode }) {

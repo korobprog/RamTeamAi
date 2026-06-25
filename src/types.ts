@@ -7,6 +7,7 @@ export type ScreenId =
   | "topology"
   | "chat"
   | "build"
+  | "workbench"
   | "settings";
 
 export type ProviderKind = "anthropic" | "openai" | "gemini" | "ollama" | "RamTeamAi" | "custom";

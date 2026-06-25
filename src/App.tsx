@@ -8,6 +8,7 @@ import { CustomApiScreen } from "./screens/CustomApiScreen";
 import { McpScreen } from "./screens/McpScreen";
 import { OnboardingScreen } from "./screens/OnboardingScreen";
 import { ProvidersScreen } from "./screens/ProvidersScreen";
+import { PostBuildWorkbenchScreen } from "./screens/PostBuildWorkbenchScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { TopologyScreen } from "./screens/TopologyScreen";
 import { useAppStore } from "./store/appStore";
@@ -42,6 +43,7 @@ export default function App() {
       {screen === "topology" && <TopologyScreen />}
       {screen === "chat" && <ChatScreen />}
       {screen === "build" && <BuildScreen />}
+      {screen === "workbench" && <PostBuildWorkbenchScreen />}
       {screen === "settings" && <SettingsScreen />}
     </FRamTeamAie>
   );
