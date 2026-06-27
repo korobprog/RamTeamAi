@@ -28,6 +28,7 @@ function installMemoryStorage() {
     setTimeout,
     clearTimeout,
   });
+  return localStorage;
 }
 
 function seedScaffoldFiles(rootPath: string) {
@@ -187,6 +188,23 @@ describe("appStore auto implementation integration", () => {
     harness.files.clear();
     harness.implementationCalls = 0;
     installMemoryStorage();
+  });
+
+  it("heals persisted RamTeamAi API URLs to the current Vibemod endpoint", async () => {
+    const localStorage = installMemoryStorage();
+    localStorage.setItem("RamTeamAi.providers.v2", JSON.stringify([{
+      id: "RamTeamAi",
+      baseUrl: "https://api.neurogate.space/v1",
+      status: "connected",
+      keyRef: "keychain://RamTeamAi/RamTeamAi",
+      maskedKey: "test-key",
+    }]));
+
+    const { useAppStore } = await import("../appStore");
+    const provider = useAppStore.getState().providers.find((item) => item.id === "RamTeamAi");
+
+    expect(provider?.baseUrl).toBe("https://r-api.vibemod.pro/v1");
+    expect(provider?.maskedKey).toBe("test-key");
   });
 
   it("runs planning plus implementation rounds until checklist completion and marks built", async () => {

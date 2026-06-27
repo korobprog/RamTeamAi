@@ -161,7 +161,7 @@ pub fn default_providers() -> Vec<ProviderConfig> {
             id: "RamTeamAi".into(),
             name: "RamTeamAi".into(),
             kind: "RamTeamAi".into(),
-            base_url: "https://api.neurogate.space/v1".into(),
+            base_url: "https://r-api.vibemod.pro/v1".into(),
             auth: "bearer".into(),
             stream: "sse".into(),
             status: "not-configured".into(),

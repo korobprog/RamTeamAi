@@ -11,7 +11,7 @@ export const providersSeed: ProviderConfig[] = [
     id: "RamTeamAi",
     name: "Neurogate",
     kind: "RamTeamAi",
-    baseUrl: "https://api.neurogate.space/v1",
+    baseUrl: "https://r-api.vibemod.pro/v1",
     auth: "bearer",
     stream: "sse",
     status: "not-configured",

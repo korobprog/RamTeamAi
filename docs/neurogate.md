@@ -28,7 +28,7 @@
 Встроенный провайдер RamTeamAi в приложении использует общий Base URL:
 
 ```text
-https://api.RamTeamAi.space/v1
+https://r-api.vibemod.pro/v1
 ```
 
 Адаптер выбирает endpoint по выбранной модели:
@@ -39,18 +39,35 @@ https://api.RamTeamAi.space/v1
 
 Для Responses API приложение отправляет `store: false`, чтобы не требовать серверного хранения ответа.
 
+OpenAI-compatible example:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="xxxxx",
+    base_url="https://r-api.vibemod.pro/v1",
+)
+
+resp = client.chat.completions.create(
+    model="deepseek-v4-flash",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(resp.choices[0].message.content)
+```
+
 ## Claude Code / Anthropic-compatible клиенты
 
 Для Claude Code / Desktop IDE от Anthropic обычно указывают base URL без `/v1`, потому что клиент Anthropic добавляет `/v1` сам:
 
 ```bash
-export ANTHROPIC_BASE_URL="https://api.RamTeamAi.space"
+export ANTHROPIC_BASE_URL="https://r-api.vibemod.pro"
 export ANTHROPIC_API_KEY="xxxxx"
 claude
 ```
 
 ```powershell
-$env:ANTHROPIC_BASE_URL = "https://api.RamTeamAi.space"
+$env:ANTHROPIC_BASE_URL = "https://r-api.vibemod.pro"
 $env:ANTHROPIC_API_KEY = "xxxxx"
 claude
 ```

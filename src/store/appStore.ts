@@ -312,12 +312,13 @@ function updateProviderMonitoring(provider: ProviderConfig, patch: { tokens?: nu
   };
 }
 
-// The rebrand to RamTeamAi accidentally rewrote the live API host to a domain
-// that does not resolve. Heal any baseUrl persisted with the broken host so the
-// user's stored provider stops overriding the corrected seed value.
+// The built-in AI gateway host changed over time. Heal any persisted legacy
+// baseUrl so the user's stored provider does not override the corrected seed.
 function healProviderBaseUrl(url: string | undefined, fallback: string): string {
   if (!url) return fallback;
-  return url.replace(/api\.ramteamai\.space/i, "api.neurogate.space");
+  return url
+    .replace(/api\.ramteamai\.space/i, "r-api.vibemod.pro")
+    .replace(/api\.neurogate\.space/i, "r-api.vibemod.pro");
 }
 
 function mergeBuiltInProvider(defaultProvider: ProviderConfig, savedProvider?: ProviderConfig): ProviderConfig {
