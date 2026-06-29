@@ -1333,7 +1333,7 @@ interface AppState {
   clearWorkspaceFolder: () => void;
   initWorkspace: (announce?: boolean) => Promise<WorkspaceInitResult | undefined>;
   requestBuild: (confirmed: boolean) => Promise<void>;
-  implementProject: () => Promise<void>;
+  implementProject: () => Promise<boolean>;
   startAgentImplementation: () => Promise<void>;
   continueAutoImplementation: () => Promise<void>;
   verifyImplementationChecklist: () => Promise<ChecklistItem[]>;
@@ -3103,29 +3103,47 @@ export const useAppStore = create<AppState>((set, get) => ({
   requestBuild: async (confirmed) => {
     const { artifact, workspacePath } = get();
     set({ busy: true });
-    const result = await buildProject(artifact, confirmed, workspacePath);
-    set((state) => {
-      const projects = confirmed
-        ? state.projects.map((project) => project.id === state.activeProjectId
-          ? { ...project, status: "scaffolded" as const, updatedAt: new Date().toISOString() }
-          : project)
-        : state.projects;
-      const nextArtifact = confirmed ? { ...state.artifact, status: "scaffolded" as const } : state.artifact;
-      const session = state.activeSessionId
-        ? withSessionProgress(state.session, nextArtifact, state.implementationChecklist, state.lastRunFilesWritten, result)
-        : state.session;
-      const sessions = state.activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
-      if (confirmed) persistProjects(projects);
-      if (state.activeSessionId) persistSessions(sessions);
-      return {
-        busy: false,
-        lastBuild: result,
-        projects,
-        artifact: nextArtifact,
-        session,
-        sessions,
-      };
-    });
+    try {
+      const result = await buildProject(artifact, confirmed, workspacePath);
+      set((state) => {
+        const projects = confirmed
+          ? state.projects.map((project) => project.id === state.activeProjectId
+            ? { ...project, status: "scaffolded" as const, updatedAt: new Date().toISOString() }
+            : project)
+          : state.projects;
+        const nextArtifact = confirmed ? { ...state.artifact, status: "scaffolded" as const } : state.artifact;
+        const session = state.activeSessionId
+          ? withSessionProgress(state.session, nextArtifact, state.implementationChecklist, state.lastRunFilesWritten, result)
+          : state.session;
+        const sessions = state.activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
+        if (confirmed) persistProjects(projects);
+        if (state.activeSessionId) persistSessions(sessions);
+        return {
+          busy: false,
+          lastBuild: result,
+          projects,
+          artifact: nextArtifact,
+          session,
+          sessions,
+        };
+      });
+    } catch (error) {
+      set((state) => {
+        const text = "Ошибка подготовки каркаса: " + (error instanceof Error ? error.message : String(error));
+        const session = state.activeSessionId
+          ? withSessionProgress(
+            withSystemMessage(state.session, text),
+            state.artifact,
+            state.implementationChecklist,
+            state.lastRunFilesWritten,
+            state.lastBuild,
+          )
+          : withSystemMessage(state.session, text);
+        const sessions = state.activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
+        if (state.activeSessionId) persistSessions(sessions);
+        return { busy: false, session, sessions };
+      });
+    }
   },
   implementProject: async () => {
     const { artifact, activeSessionId, agents } = get();
@@ -3139,37 +3157,57 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     set({ busy: true });
-    const result = await buildProject(artifact, true, workspacePath);
-    const folderNote = result.rootPath ? "\nПапка: " + result.rootPath : "";
-    const assignments = planImplementationAssignments(artifact, agents);
-    const assignmentText = assignments.length
-      ? "\n\nСледующий этап — задачи для агентов:\n" + assignments
-        .map((item) => `- ${item.owner} (${item.role}): ${item.summary} → ${item.deliverables.join(", ")}`)
-        .join("\n")
-      : "";
-    set((state) => {
-      const projects = state.projects.map((project) => project.id === state.activeProjectId
-        ? { ...project, status: "scaffolded" as const, updatedAt: new Date().toISOString() }
-        : project);
-      persistProjects(projects);
+    try {
+      const result = await buildProject(artifact, true, workspacePath);
+      const folderNote = result.rootPath ? "\nПапка: " + result.rootPath : "";
+      const assignments = planImplementationAssignments(artifact, agents);
+      const assignmentText = assignments.length
+        ? "\n\nСледующий этап — задачи для агентов:\n" + assignments
+          .map((item) => `- ${item.owner} (${item.role}): ${item.summary} → ${item.deliverables.join(", ")}`)
+          .join("\n")
+        : "";
+      set((state) => {
+        const projects = state.projects.map((project) => project.id === state.activeProjectId
+          ? { ...project, status: "scaffolded" as const, updatedAt: new Date().toISOString() }
+          : project);
+        persistProjects(projects);
 
-      const intro = "🧱 Каркас проекта подготовлен. Шагов в плане: " + state.artifact.steps.length + "." + folderNote + assignmentText;
-      const nextArtifact = { ...state.artifact, status: "scaffolded" as const };
-      const session = activeSessionId
-        ? withSessionProgress(withSystemMessage(state.session, intro), nextArtifact, state.implementationChecklist, state.lastRunFilesWritten, result)
-        : state.session;
-      const sessions = activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
-      if (activeSessionId) persistSessions(sessions);
+        const intro = "🧱 Каркас проекта подготовлен. Шагов в плане: " + state.artifact.steps.length + "." + folderNote + assignmentText;
+        const nextArtifact = { ...state.artifact, status: "scaffolded" as const };
+        const session = activeSessionId
+          ? withSessionProgress(withSystemMessage(state.session, intro), nextArtifact, state.implementationChecklist, state.lastRunFilesWritten, result)
+          : state.session;
+        const sessions = activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
+        if (activeSessionId) persistSessions(sessions);
 
-      return {
-        busy: false,
-        lastBuild: result,
-        projects,
-        session,
-        sessions,
-        artifact: nextArtifact,
-      };
-    });
+        return {
+          busy: false,
+          lastBuild: result,
+          projects,
+          session,
+          sessions,
+          artifact: nextArtifact,
+        };
+      });
+      return true;
+    } catch (error) {
+      set((state) => {
+        const text = "Ошибка подготовки каркаса: " + (error instanceof Error ? error.message : String(error));
+        const session = activeSessionId
+          ? withSessionProgress(
+            withSystemMessage(state.session, text),
+            state.artifact,
+            state.implementationChecklist,
+            state.lastRunFilesWritten,
+            state.lastBuild,
+          )
+          : withSystemMessage(state.session, text);
+        const sessions = activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
+        if (activeSessionId) persistSessions(sessions);
+        return { busy: false, session, sessions };
+      });
+      return false;
+    }
   },
   startAgentImplementation: async () => {
     if (get().busy || !get().activeSessionId) return;

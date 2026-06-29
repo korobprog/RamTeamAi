@@ -203,7 +203,8 @@ export function BuildScreen() {
 
   async function handleStartAgents() {
     if (busy || !hasDecision) return;
-    if (!scaffoldReady) await implementProject();
+    const scaffoldPrepared = scaffoldReady || await implementProject();
+    if (!scaffoldPrepared) return;
     await startAgentImplementation();
   }
 

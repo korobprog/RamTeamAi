@@ -250,6 +250,29 @@ describe("appStore auto implementation integration", () => {
     expect(state.session.messages.some((item) => item.agentRole === "architect" && item.text.includes("Что вы хотите сделать"))).toBe(true);
   });
 
+  it("resets busy and reports scaffold errors when project builder fails", async () => {
+    const { useAppStore } = await import("../appStore");
+    const projectBuilder = await import("../../projectBuilder");
+
+    useAppStore.setState((state) => ({
+      workspacePath: "mem://workspace",
+      artifact: {
+        ...state.artifact,
+        steps: ["Собрать каркас проекта", "Подготовить задачи агентам"],
+        status: "approved" as const,
+      },
+    }));
+    vi.mocked(projectBuilder.buildProject).mockRejectedValueOnce(new Error("disk full"));
+
+    const started = await useAppStore.getState().implementProject();
+
+    const state = useAppStore.getState();
+    expect(started).toBe(false);
+    expect(state.busy).toBe(false);
+    expect(state.artifact.status).toBe("approved");
+    expect(state.session.messages.some((item) => item.text.includes("Ошибка подготовки каркаса: disk full"))).toBe(true);
+  });
+
   it("continues automatically after a manual implementation start when auto mode is enabled", async () => {
     const { useAppStore } = await import("../appStore");
     const steps = [

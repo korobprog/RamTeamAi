@@ -7,6 +7,16 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 
+function Save-Utf8NoBomFile {
+  param(
+    [Parameter(Mandatory = $true)] [string] $Path,
+    [Parameter(Mandatory = $true)] [string] $Value
+  )
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($Path, $Value, $utf8NoBom)
+}
+
 function Save-JsonFile {
   param(
     [Parameter(Mandatory = $true)] [string] $Path,
@@ -14,7 +24,7 @@ function Save-JsonFile {
   )
 
   $json = $Value | ConvertTo-Json -Depth 100
-  Set-Content -Path $Path -Value ($json + "`n") -Encoding utf8
+  Save-Utf8NoBomFile -Path $Path -Value ($json + "`n")
 }
 
 function Replace-First {
@@ -50,7 +60,7 @@ if (Test-Path $packageLockPath) {
   $packageLock = Get-Content -Raw $packageLockPath
   $packageLock = Replace-First -Text $packageLock -Pattern '("version"\s*:\s*")[^"]+(")' -Replacement "`${1}$Version`${2}"
   $packageLock = Replace-First -Text $packageLock -Pattern '(""\s*:\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"version"\s*:\s*")[^"]+(")' -Replacement "`${1}$Version`${2}"
-  Set-Content -Path $packageLockPath -Value $packageLock -Encoding utf8
+  Save-Utf8NoBomFile -Path $packageLockPath -Value $packageLock
 }
 
 $tauriConfig = Get-Content -Raw $tauriConfigPath | ConvertFrom-Json
@@ -59,6 +69,6 @@ Save-JsonFile -Path $tauriConfigPath -Value $tauriConfig
 
 $cargoToml = Get-Content -Raw $cargoTomlPath
 $cargoToml = $cargoToml -replace '(?m)^version = ".*"$', "version = `"$Version`""
-Set-Content -Path $cargoTomlPath -Value $cargoToml -Encoding utf8
+Save-Utf8NoBomFile -Path $cargoTomlPath -Value $cargoToml
 
 Write-Host "Version set to $Version"
