@@ -28,7 +28,7 @@ import { applyProviderQuotaUsage } from "../providers/limits";
 import { buildProject, planImplementationAssignments, renderImplementationPlan, SCAFFOLD_APP_STUB_MARKER, validateProjectCompleteness } from "../projectBuilder";
 import { beginGithubDeviceFlow, disconnectGithub, isGithubConfigured, loadGithubProfile, pollGithubDeviceFlow } from "../integrations/github";
 import { describeFirebaseAuthError, isFirebaseConfigured, loadCloudSettings, loadFirebaseUid, saveCloudSettings, signInFirebaseWithGithubToken, signOutFirebase } from "../integrations/firebase";
-import type { AgentConfig, AgentDialogMessage, AgentRunCheckpoint, AgentRunMode, AppSettings, BuildResult, ChatMessage, CloudSettingsSnapshot, GithubTokenPollResult, ImplementationAssignment, LiveFileActivity, McpServerConfig, McpServerTestResult, McpToolCallResult, MessageAction, PlanArtifact, ProjectConfig, ProjectGitLink, ProviderConfig, ProviderMonitoringConfig, ProjectReadinessStatus, QueuedAgentQuestion, SavedImplementationChecklistItem, ScreenId, SessionConfig, TopologyConfig, UserAccountState, WorkspaceInitResult } from "../types";
+import type { AgentConfig, AgentDialogMessage, AgentRunCheckpoint, AgentRunMode, AppSettings, BuildResult, ChatMessage, CloudSettingsSnapshot, DiagnosticCategory, DiagnosticEntry, DiagnosticSeverity, GithubTokenPollResult, ImplementationAssignment, LiveFileActivity, McpServerConfig, McpServerTestResult, McpToolCallResult, MessageAction, PlanArtifact, ProjectConfig, ProjectGitLink, ProviderConfig, ProviderMonitoringConfig, ProjectReadinessStatus, QueuedAgentQuestion, SavedImplementationChecklistItem, ScreenId, SessionConfig, TopologyConfig, UserAccountState, WorkspaceInitResult } from "../types";
 import { clearStoredWebWorkspaceFolder, initWorkspaceFiles, listWorkspaceFiles, pickWorkspaceFolder, readWorkspaceTextFile, writeWorkspaceTextFile } from "../workspace";
 
 const PROVIDERS_STORAGE_KEY = "RamTeamAi.providers.v2";
@@ -43,6 +43,8 @@ const ACTIVE_PROJECT_STORAGE_KEY = "RamTeamAi.active-project.v1";
 const ACTIVE_SESSION_STORAGE_KEY = "RamTeamAi.active-session.v1";
 const APP_SETTINGS_STORAGE_KEY = "RamTeamAi.app-settings.v1";
 const PROJECT_WORK_TIMERS_STORAGE_KEY = "RamTeamAi.project-work-timers.v1";
+const DIAGNOSTICS_STORAGE_KEY = "RamTeamAi.diagnostics.v1";
+const MAX_DIAGNOSTIC_ENTRIES = 120;
 
 const LEGACY_MCP_DEFAULT_ENDPOINTS: Record<string, Array<Pick<McpServerConfig, "transport" | "commandOrUrl">>> = {
   "web-search": [{ transport: "http", commandOrUrl: "http://localhost:3000/mcp" }],
@@ -312,12 +314,13 @@ function updateProviderMonitoring(provider: ProviderConfig, patch: { tokens?: nu
   };
 }
 
-// The rebrand to RamTeamAi accidentally rewrote the live API host to a domain
-// that does not resolve. Heal any baseUrl persisted with the broken host so the
-// user's stored provider stops overriding the corrected seed value.
+// Keep built-in provider settings on the current Vibemod gateway even when a
+// previous app version persisted the old Neurogate/RamTeamAi host locally.
 function healProviderBaseUrl(url: string | undefined, fallback: string): string {
   if (!url) return fallback;
-  return url.replace(/api\.ramteamai\.space/i, "api.neurogate.space");
+  return url
+    .replace(/https?:\/\/api\.ramteamai\.space\/v1/i, "https://r-api.vibemod.pro/v1")
+    .replace(/https?:\/\/api\.neurogate\.space\/v1/i, "https://r-api.vibemod.pro/v1");
 }
 
 function mergeBuiltInProvider(defaultProvider: ProviderConfig, savedProvider?: ProviderConfig): ProviderConfig {
@@ -540,6 +543,126 @@ function loadProjectWorkTimers(): Record<string, number> {
 function persistProjectWorkTimers(timers: Record<string, number>): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(PROJECT_WORK_TIMERS_STORAGE_KEY, JSON.stringify(timers));
+}
+
+type DiagnosticDraft = {
+  severity: DiagnosticSeverity;
+  category: DiagnosticCategory;
+  title: string;
+  message: string;
+  source?: string;
+  details?: string;
+  stack?: string;
+  context?: Record<string, unknown>;
+  agentId?: string;
+  providerId?: string;
+  sessionId?: string;
+  projectId?: string;
+};
+
+function sanitizeDiagnosticText(value: unknown, limit = 4_000): string | undefined {
+  if (value == null) return undefined;
+  const text = String(value).trim();
+  if (!text) return undefined;
+  return text.length > limit ? text.slice(0, limit) + "…" : text;
+}
+
+function normalizeDiagnosticContext(context?: Record<string, unknown>): Record<string, string> | undefined {
+  if (!context) return undefined;
+  const normalized = Object.fromEntries(
+    Object.entries(context)
+      .filter(([, value]) => value !== undefined && value !== null && value !== "")
+      .map(([key, value]) => [key, sanitizeDiagnosticText(value, 240) ?? ""])
+      .filter(([, value]) => Boolean(value)),
+  );
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function buildDiagnosticFingerprint(input: DiagnosticDraft): string {
+  return [
+    input.category,
+    input.severity,
+    input.source ?? "",
+    input.title,
+    input.message,
+    input.agentId ?? "",
+    input.providerId ?? "",
+    input.sessionId ?? "",
+    input.projectId ?? "",
+  ].join("::").toLowerCase();
+}
+
+function normalizeDiagnosticEntry(entry: DiagnosticEntry): DiagnosticEntry {
+  return {
+    ...entry,
+    title: sanitizeDiagnosticText(entry.title, 180) ?? "Diagnostic",
+    message: sanitizeDiagnosticText(entry.message, 1_200) ?? "Unknown issue",
+    source: sanitizeDiagnosticText(entry.source, 160),
+    details: sanitizeDiagnosticText(entry.details, 4_000),
+    stack: sanitizeDiagnosticText(entry.stack, 6_000),
+    context: normalizeDiagnosticContext(entry.context),
+    count: Math.max(1, Number(entry.count) || 1),
+  };
+}
+
+function loadDiagnostics(): DiagnosticEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(DIAGNOSTICS_STORAGE_KEY);
+    if (!raw) return [];
+    return (JSON.parse(raw) as DiagnosticEntry[]).map(normalizeDiagnosticEntry).slice(0, MAX_DIAGNOSTIC_ENTRIES);
+  } catch {
+    return [];
+  }
+}
+
+function persistDiagnostics(entries: DiagnosticEntry[]): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(DIAGNOSTICS_STORAGE_KEY, JSON.stringify(entries));
+}
+
+function upsertDiagnostic(entries: DiagnosticEntry[], input: DiagnosticDraft): DiagnosticEntry[] {
+  const now = new Date().toISOString();
+  const fingerprint = buildDiagnosticFingerprint(input);
+  const existing = entries.find((entry) => entry.fingerprint === fingerprint);
+  const nextEntry: DiagnosticEntry = normalizeDiagnosticEntry(existing
+    ? {
+      ...existing,
+      updatedAt: now,
+      severity: input.severity,
+      category: input.category,
+      title: input.title,
+      message: input.message,
+      source: input.source,
+      details: input.details,
+      stack: input.stack,
+      context: normalizeDiagnosticContext(input.context),
+      agentId: input.agentId,
+      providerId: input.providerId,
+      sessionId: input.sessionId,
+      projectId: input.projectId,
+      count: existing.count + 1,
+    }
+    : {
+      id: "diag-" + now + "-" + Math.random().toString(36).slice(2, 8),
+      fingerprint,
+      createdAt: now,
+      updatedAt: now,
+      severity: input.severity,
+      category: input.category,
+      title: input.title,
+      message: input.message,
+      source: input.source,
+      details: input.details,
+      stack: input.stack,
+      context: normalizeDiagnosticContext(input.context),
+      agentId: input.agentId,
+      providerId: input.providerId,
+      sessionId: input.sessionId,
+      projectId: input.projectId,
+      count: 1,
+    });
+  return [nextEntry, ...entries.filter((entry) => entry.fingerprint !== fingerprint)].slice(0, MAX_DIAGNOSTIC_ENTRIES);
 }
 
 const PLAN_STATUSES = new Set<PlanArtifact["status"]>(["draft", "approved", "scaffolded", "built"]);
@@ -1280,12 +1403,16 @@ interface AppState {
   agentDialogOpen: boolean;
   agentDialogBusy: boolean;
   agentDialogAgentId?: string;
+  diagnostics: DiagnosticEntry[];
   projectWorkTimers: Record<string, number>;
   agentRunCheckpoints: AgentRunCheckpoint[];
   activeWorkStartedAt?: string;
   autoRunning: boolean;
   busy: boolean;
   setScreen: (screen: ScreenId) => void;
+  pushDiagnostic: (entry: DiagnosticDraft) => void;
+  removeDiagnostic: (id: string) => void;
+  clearDiagnostics: () => void;
   hydrateAccount: () => Promise<void>;
   startGithubLogin: () => Promise<void>;
   disconnectAccount: () => Promise<void>;
@@ -1377,12 +1504,27 @@ export const useAppStore = create<AppState>((set, get) => ({
   agentDialogOpen: false,
   agentDialogBusy: false,
   agentDialogAgentId: undefined,
+  diagnostics: loadDiagnostics(),
   projectWorkTimers: loadProjectWorkTimers(),
   agentRunCheckpoints: [],
   activeWorkStartedAt: undefined,
   autoRunning: false,
   busy: false,
   setScreen: (screen) => set({ screen }),
+  pushDiagnostic: (entry) => set((state) => {
+    const diagnostics = upsertDiagnostic(state.diagnostics, entry);
+    persistDiagnostics(diagnostics);
+    return { diagnostics };
+  }),
+  removeDiagnostic: (id) => set((state) => {
+    const diagnostics = state.diagnostics.filter((entry) => entry.id !== id);
+    persistDiagnostics(diagnostics);
+    return { diagnostics };
+  }),
+  clearDiagnostics: () => {
+    persistDiagnostics([]);
+    set({ diagnostics: [] });
+  },
   hydrateAccount: async () => {
     const profile = await loadGithubProfile();
     const firebaseUid = await loadFirebaseUid();
@@ -1734,6 +1876,18 @@ export const useAppStore = create<AppState>((set, get) => ({
           return { providers };
         });
       } catch (error) {
+        get().pushDiagnostic({
+          severity: "warning",
+          category: "provider",
+          title: `Health-check провайдера ${provider.name} завершился ошибкой`,
+          message: summarizeAttemptError(error),
+          source: "refreshProviderMonitoring",
+          providerId: provider.id,
+          context: {
+            provider: provider.name,
+            healthSupervisorEnabled: get().appSettings.healthSupervisorEnabled,
+          },
+        });
         set((state) => {
           const providers = state.providers.map((item) => item.id === provider.id
             ? updateProviderMonitoring(item, { tokens: 0, failed: true, error: summarizeAttemptError(error) })
@@ -1748,16 +1902,49 @@ export const useAppStore = create<AppState>((set, get) => ({
     const provider = get().providers.find((item) => item.id === providerId);
     if (!provider) return;
     set({ busy: true });
-    const result = await testProviderConnection(provider);
-    set((state) => {
-      const nextStatus: ProviderConfig["status"] = result.ok ? "connected" : "warning";
-      const providers = state.providers.map((item) => item.id === providerId
-        ? updateProviderMonitoring({ ...item, status: nextStatus }, { tokens: 0, latencyMs: result.latencyMs, failed: !result.ok, error: result.ok ? undefined : result.message })
-        : item);
-      persistProviders(providers);
-      return { busy: false, providers };
-    });
-    return result;
+    try {
+      const result = await testProviderConnection(provider);
+      set((state) => {
+        const nextStatus: ProviderConfig["status"] = result.ok ? "connected" : "warning";
+        const providers = state.providers.map((item) => item.id === providerId
+          ? updateProviderMonitoring({ ...item, status: nextStatus }, { tokens: 0, latencyMs: result.latencyMs, failed: !result.ok, error: result.ok ? undefined : result.message })
+          : item);
+        persistProviders(providers);
+        return { busy: false, providers };
+      });
+      if (!result.ok) {
+        get().pushDiagnostic({
+          severity: "warning",
+          category: "provider",
+          title: `Провайдер ${provider.name} не прошёл тест`,
+          message: result.message,
+          source: "testProvider",
+          providerId,
+          context: {
+            provider: provider.name,
+            latencyMs: result.latencyMs,
+          },
+        });
+      }
+      return result;
+    } catch (error) {
+      set({ busy: false });
+      const message = summarizeAttemptError(error);
+      get().pushDiagnostic({
+        severity: "error",
+        category: "provider",
+        title: `Не удалось проверить провайдер ${provider.name}`,
+        message,
+        source: "testProvider",
+        providerId,
+        stack: error instanceof Error ? error.stack : undefined,
+        context: {
+          provider: provider.name,
+          baseUrl: provider.baseUrl,
+        },
+      });
+      return { ok: false, latencyMs: 0, message };
+    }
   },
   setAppSettings: (patch) => set((state) => {
     const appSettings = normalizeAppSettings({ ...state.appSettings, ...patch });
@@ -1826,6 +2013,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       persistMcpServers(mcpServers);
       return { busy: false, mcpServers };
     });
+    if (!result.ok) {
+      get().pushDiagnostic({
+        severity: "warning",
+        category: "mcp",
+        title: `MCP сервер ${server.name} не прошёл проверку`,
+        message: result.message,
+        source: "testMcpServer",
+        context: {
+          server: server.name,
+          transport: server.transport,
+          latencyMs: result.latencyMs,
+        },
+      });
+    }
     return result;
   },
   callMcpTool: async (serverId, toolName, args) => {
@@ -1835,9 +2036,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const result = await callMcpToolRequest(server, toolName, args);
       set({ busy: false });
+      if (!result.ok) {
+        get().pushDiagnostic({
+          severity: "warning",
+          category: "mcp",
+          title: `Инструмент ${toolName} вернул ошибку`,
+          message: result.content,
+          source: "callMcpTool",
+          details: sanitizeDiagnosticText(JSON.stringify(result.raw, null, 2), 4_000),
+          context: {
+            server: server.name,
+            tool: toolName,
+            latencyMs: result.latencyMs,
+          },
+        });
+      }
       return result;
     } catch (error) {
       set({ busy: false });
+      get().pushDiagnostic({
+        severity: "error",
+        category: "mcp",
+        title: `Не удалось вызвать MCP инструмент ${toolName}`,
+        message: summarizeAttemptError(error),
+        source: "callMcpTool",
+        stack: error instanceof Error ? error.stack : undefined,
+        context: {
+          server: server.name,
+          tool: toolName,
+        },
+      });
       throw error;
     }
   },
@@ -2076,8 +2304,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const result = await buildProject(artifact, true, workspacePath);
       implementationRootPath = result.rootPath;
       const implementationPlan = renderImplementationPlan(artifact, assignments);
-      await writeWorkspaceTextFile(result.rootPath, "IMPLEMENTATION.md", implementationPlan, { overwrite: true });
-      await writeWorkspaceTextFile(result.rootPath, "docs/agent-tasks.md", implementationPlan, { overwrite: true });
+      // Implementation rounds may be repeated. Do not reset IMPLEMENTATION.md or
+      // docs/agent-tasks.md here: agents use those files as their live checklist,
+      // and overwriting them on every "continue" erased progress/evidence.
+      await writeWorkspaceTextFile(result.rootPath, "IMPLEMENTATION.md", implementationPlan, { overwrite: false });
+      await writeWorkspaceTextFile(result.rootPath, "docs/agent-tasks.md", implementationPlan, { overwrite: false });
       const scaffoldActivity: LiveFileActivity[] = [
         ...result.files.slice(0, 8).map((path) => ({
           id: "file-" + Date.now() + "-" + path,
@@ -2356,6 +2587,22 @@ export const useAppStore = create<AppState>((set, get) => ({
               const reason = summarizeAttemptError(error);
               failedFiles.push(file.path + " — " + reason);
               actions.push({ kind: "error", label: file.path, detail: reason });
+              get().pushDiagnostic({
+                severity: "error",
+                category: "workspace",
+                title: `Не удалось записать файл ${file.path}`,
+                message: reason,
+                source: "runTeam.writeWorkspaceTextFile",
+                stack: error instanceof Error ? error.stack : undefined,
+                agentId: agent.id,
+                sessionId: get().activeSessionId,
+                projectId: get().activeProjectId,
+                context: {
+                  agent: agent.name,
+                  mode,
+                  workspacePath: implementationRootPath,
+                },
+              });
               set((state) => ({
                 liveFileActivity: pushLiveFileActivity(state.liveFileActivity, {
                   id: "file-" + Date.now() + "-" + agent.id + "-" + file.path,
@@ -2380,6 +2627,22 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (!fileBlocks.length) {
             actions.push({ kind: "idle", label: "Код не записан", detail: "Ответ без блока «Файл: путь» + код" });
             text += "\n\n⚠️ В ответе нет ни одного блока «Файл: путь» + код, поэтому на диск ничего не записано. Папка доступна для записи (план уже записан в неё), проблема в том, что агент описал план вместо кода. Нажмите «Запустить агентов реализации» ещё раз — промпт усилен, чтобы агент вернул сам код.";
+            get().pushDiagnostic({
+              severity: "error",
+              category: "ai",
+              title: `Агент ${agent.name} не вернул файловые блоки`,
+              message: "В ответе нет ни одного блока `Файл: путь` + код, поэтому изменения не были записаны в рабочую папку.",
+              source: "runTeam.extractWorkspaceFileBlocks",
+              agentId: agent.id,
+              providerId: agent.providerId,
+              sessionId: get().activeSessionId,
+              projectId: get().activeProjectId,
+              context: {
+                agent: agent.name,
+                mode,
+                workspacePath: implementationRootPath,
+              },
+            });
             throw new AgentEmptyOutputError(agent.name);
           }
           tokens = Math.max(tokens, Math.ceil(text.length / 4));
@@ -2395,6 +2658,22 @@ export const useAppStore = create<AppState>((set, get) => ({
           : undefined;
         if (replacementAgent) {
           const failureReason = summarizeAttemptError(error);
+          get().pushDiagnostic({
+            severity: "warning",
+            category: "ai",
+            title: `Supervisor заменил агента ${agent.name}`,
+            message: failureReason,
+            source: "runTeam.recovery",
+            agentId: agent.id,
+            providerId: agent.providerId,
+            sessionId: get().activeSessionId,
+            projectId: get().activeProjectId,
+            context: {
+              replacementAgent: replacementAgent.name,
+              mode,
+              step: checkpoint.step,
+            },
+          });
           checkpoint = {
             ...recoverCheckpoint(checkpoint, replacementAgent, appSettings.agentLeaseTimeoutSec),
             failureReason,
@@ -2481,9 +2760,41 @@ export const useAppStore = create<AppState>((set, get) => ({
                   const reason = summarizeAttemptError(writeError);
                   failedFiles.push(file.path + " — " + reason);
                   actions.push({ kind: "error", label: file.path, detail: reason });
+                  get().pushDiagnostic({
+                    severity: "error",
+                    category: "workspace",
+                    title: `Резервный агент не смог записать файл ${file.path}`,
+                    message: reason,
+                    source: "runTeam.recovery.writeWorkspaceTextFile",
+                    stack: writeError instanceof Error ? writeError.stack : undefined,
+                    agentId: replacementAgent.id,
+                    sessionId: get().activeSessionId,
+                    projectId: get().activeProjectId,
+                    context: {
+                      agent: replacementAgent.name,
+                      mode,
+                      workspacePath: implementationRootPath,
+                    },
+                  });
                 }
               }
               if (!fileBlocks.length) {
+                get().pushDiagnostic({
+                  severity: "error",
+                  category: "ai",
+                  title: `Резервный агент ${replacementAgent.name} тоже не вернул файловые блоки`,
+                  message: "Supervisor восстановил выполнение, но резервный агент не прислал ни одного блока `Файл: путь` + код.",
+                  source: "runTeam.recovery.extractWorkspaceFileBlocks",
+                  agentId: replacementAgent.id,
+                  providerId: replacementAgent.providerId,
+                  sessionId: get().activeSessionId,
+                  projectId: get().activeProjectId,
+                  context: {
+                    replacementFor: agent.name,
+                    mode,
+                    workspacePath: implementationRootPath,
+                  },
+                });
                 throw new AgentEmptyOutputError(replacementAgent.name);
               }
               totalFilesWritten += writtenFiles.length;
@@ -2498,6 +2809,23 @@ export const useAppStore = create<AppState>((set, get) => ({
               agents: state.agents.map((item) => item.id === replacementAgent.id ? { ...item, status: "done" } : item),
             }));
           } catch (recoveryError) {
+            get().pushDiagnostic({
+              severity: "error",
+              category: "ai",
+              title: `Supervisor не смог восстановить задачу после сбоя агента ${agent.name}`,
+              message: summarizeAttemptError(recoveryError),
+              source: "runTeam.recovery",
+              stack: recoveryError instanceof Error ? recoveryError.stack : undefined,
+              agentId: replacementAgent.id,
+              providerId: replacementAgent.providerId,
+              sessionId: get().activeSessionId,
+              projectId: get().activeProjectId,
+              context: {
+                failedAgent: agent.name,
+                mode,
+                step: checkpoint.step,
+              },
+            });
             checkpoint = failCheckpoint(checkpoint, summarizeAttemptError(recoveryError));
             set((state) => ({
               agentRunCheckpoints: state.agentRunCheckpoints.map((item) => item.id === checkpoint.id ? checkpoint : item),
@@ -2506,6 +2834,21 @@ export const useAppStore = create<AppState>((set, get) => ({
             error = recoveryError;
           }
         } else if (recoverableFailure && appSettings.healthSupervisorEnabled) {
+          get().pushDiagnostic({
+            severity: "warning",
+            category: "ai",
+            title: `Нет здорового резервного агента для ${agent.name}`,
+            message: summarizeAttemptError(error),
+            source: "runTeam.recovery",
+            agentId: agent.id,
+            providerId: agent.providerId,
+            sessionId: get().activeSessionId,
+            projectId: get().activeProjectId,
+            context: {
+              mode,
+              step: checkpoint.step,
+            },
+          });
           checkpoint = partialCheckpoint(checkpoint, "No healthy replacement agent is available: " + summarizeAttemptError(error));
           set((state) => ({
             agentRunCheckpoints: state.agentRunCheckpoints.map((item) => item.id === checkpoint.id ? checkpoint : item),
@@ -2531,6 +2874,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         tokens = Math.max(24, Math.ceil(text.length / 4));
         actions.length = 0;
         actions.push({ kind: "error", label: "\u041e\u0448\u0438\u0431\u043a\u0430 API", detail: summarizeAttemptError(error) });
+        get().pushDiagnostic({
+          severity: "error",
+          category: "ai",
+          title: `Ошибка выполнения агента ${agent.name}`,
+          message: summarizeAttemptError(error),
+          source: "runTeam",
+          stack: error instanceof Error ? error.stack : undefined,
+          agentId: agent.id,
+          providerId: agent.providerId,
+          sessionId: get().activeSessionId,
+          projectId: get().activeProjectId,
+          context: {
+            mode,
+            step: checkpoint.step,
+          },
+        });
         checkpoint = failCheckpoint(checkpoint, summarizeAttemptError(error));
         set((state) => ({ agentRunCheckpoints: state.agentRunCheckpoints.map((item) => item.id === checkpoint.id ? checkpoint : item) }));
         }
@@ -2848,6 +3207,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       answerText = "\u041e\u0448\u0438\u0431\u043a\u0430 API: " + (error instanceof Error ? error.message : String(error));
       tokens = Math.max(24, Math.ceil(answerText.length / 4));
       actions.push({ kind: "error", label: "\u041e\u0448\u0438\u0431\u043a\u0430 API", detail: summarizeAttemptError(error) });
+      get().pushDiagnostic({
+        severity: "error",
+        category: "ai",
+        title: `Ошибка диалога с агентом ${targetAgent.name}`,
+        message: summarizeAttemptError(error),
+        source: "runAgentDialogQuestion",
+        stack: error instanceof Error ? error.stack : undefined,
+        agentId: targetAgent.id,
+        providerId: targetAgent.providerId,
+        sessionId: get().activeSessionId,
+        projectId: get().activeProjectId,
+        context: {
+          questionMode: projectQuestionMode ? "project" : "operator",
+        },
+      });
     }
 
     if (attempts.length) {
@@ -3020,6 +3394,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       return result;
     } catch (error) {
       set({ busy: false });
+      get().pushDiagnostic({
+        severity: "error",
+        category: "workspace",
+        title: "Не удалось открыть существующий проект из папки",
+        message: summarizeAttemptError(error),
+        source: "openExistingWorkspaceProject",
+        stack: error instanceof Error ? error.stack : undefined,
+        projectId: get().activeProjectId,
+        sessionId: get().activeSessionId,
+        context: {
+          workspacePath: selected,
+        },
+      });
       throw error;
     }
   },
@@ -3060,6 +3447,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       return result;
     } catch (error) {
       set({ busy: false });
+      get().pushDiagnostic({
+        severity: "error",
+        category: "workspace",
+        title: "Не удалось подтвердить доступ к рабочей папке",
+        message: summarizeAttemptError(error),
+        source: "confirmWorkspaceAccess",
+        stack: error instanceof Error ? error.stack : undefined,
+        projectId: get().activeProjectId,
+        sessionId: get().activeSessionId,
+        context: {
+          workspacePath: selected,
+        },
+      });
       throw error;
     }
   },
@@ -3096,35 +3496,67 @@ export const useAppStore = create<AppState>((set, get) => ({
       return result;
     } catch (error) {
       set({ busy: false });
+      get().pushDiagnostic({
+        severity: "error",
+        category: "workspace",
+        title: "Не удалось инициализировать рабочую папку",
+        message: summarizeAttemptError(error),
+        source: "initWorkspace",
+        stack: error instanceof Error ? error.stack : undefined,
+        projectId: get().activeProjectId,
+        sessionId: get().activeSessionId,
+        context: {
+          workspacePath: rootPath,
+        },
+      });
       throw error;
     }
   },
   requestBuild: async (confirmed) => {
     const { artifact, workspacePath } = get();
     set({ busy: true });
-    const result = await buildProject(artifact, confirmed, workspacePath);
-    set((state) => {
-      const projects = confirmed
-        ? state.projects.map((project) => project.id === state.activeProjectId
-          ? { ...project, status: "scaffolded" as const, updatedAt: new Date().toISOString() }
-          : project)
-        : state.projects;
-      const nextArtifact = confirmed ? { ...state.artifact, status: "scaffolded" as const } : state.artifact;
-      const session = state.activeSessionId
-        ? withSessionProgress(state.session, nextArtifact, state.implementationChecklist, state.lastRunFilesWritten, result)
-        : state.session;
-      const sessions = state.activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
-      if (confirmed) persistProjects(projects);
-      if (state.activeSessionId) persistSessions(sessions);
-      return {
-        busy: false,
-        lastBuild: result,
-        projects,
-        artifact: nextArtifact,
-        session,
-        sessions,
-      };
-    });
+    try {
+      const result = await buildProject(artifact, confirmed, workspacePath);
+      set((state) => {
+        const projects = confirmed
+          ? state.projects.map((project) => project.id === state.activeProjectId
+            ? { ...project, status: "scaffolded" as const, updatedAt: new Date().toISOString() }
+            : project)
+          : state.projects;
+        const nextArtifact = confirmed ? { ...state.artifact, status: "scaffolded" as const } : state.artifact;
+        const session = state.activeSessionId
+          ? withSessionProgress(state.session, nextArtifact, state.implementationChecklist, state.lastRunFilesWritten, result)
+          : state.session;
+        const sessions = state.activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
+        if (confirmed) persistProjects(projects);
+        if (state.activeSessionId) persistSessions(sessions);
+        return {
+          busy: false,
+          lastBuild: result,
+          projects,
+          artifact: nextArtifact,
+          session,
+          sessions,
+        };
+      });
+    } catch (error) {
+      set({ busy: false });
+      get().pushDiagnostic({
+        severity: "error",
+        category: "build",
+        title: "Сборка каркаса проекта завершилась ошибкой",
+        message: summarizeAttemptError(error),
+        source: "requestBuild",
+        stack: error instanceof Error ? error.stack : undefined,
+        projectId: get().activeProjectId,
+        sessionId: get().activeSessionId,
+        context: {
+          confirmed,
+          workspacePath,
+        },
+      });
+      throw error;
+    }
   },
   implementProject: async () => {
     const { artifact, activeSessionId, agents } = get();
@@ -3138,37 +3570,55 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     set({ busy: true });
-    const result = await buildProject(artifact, true, workspacePath);
-    const folderNote = result.rootPath ? "\nПапка: " + result.rootPath : "";
-    const assignments = planImplementationAssignments(artifact, agents);
-    const assignmentText = assignments.length
-      ? "\n\nСледующий этап — задачи для агентов:\n" + assignments
-        .map((item) => `- ${item.owner} (${item.role}): ${item.summary} → ${item.deliverables.join(", ")}`)
-        .join("\n")
-      : "";
-    set((state) => {
-      const projects = state.projects.map((project) => project.id === state.activeProjectId
-        ? { ...project, status: "scaffolded" as const, updatedAt: new Date().toISOString() }
-        : project);
-      persistProjects(projects);
+    try {
+      const result = await buildProject(artifact, true, workspacePath);
+      const folderNote = result.rootPath ? "\nПапка: " + result.rootPath : "";
+      const assignments = planImplementationAssignments(artifact, agents);
+      const assignmentText = assignments.length
+        ? "\n\nСледующий этап — задачи для агентов:\n" + assignments
+          .map((item) => `- ${item.owner} (${item.role}): ${item.summary} → ${item.deliverables.join(", ")}`)
+          .join("\n")
+        : "";
+      set((state) => {
+        const projects = state.projects.map((project) => project.id === state.activeProjectId
+          ? { ...project, status: "scaffolded" as const, updatedAt: new Date().toISOString() }
+          : project);
+        persistProjects(projects);
 
-      const intro = "🧱 Каркас проекта подготовлен. Шагов в плане: " + state.artifact.steps.length + "." + folderNote + assignmentText;
-      const nextArtifact = { ...state.artifact, status: "scaffolded" as const };
-      const session = activeSessionId
-        ? withSessionProgress(withSystemMessage(state.session, intro), nextArtifact, state.implementationChecklist, state.lastRunFilesWritten, result)
-        : state.session;
-      const sessions = activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
-      if (activeSessionId) persistSessions(sessions);
+        const intro = "🧱 Каркас проекта подготовлен. Шагов в плане: " + state.artifact.steps.length + "." + folderNote + assignmentText;
+        const nextArtifact = { ...state.artifact, status: "scaffolded" as const };
+        const session = activeSessionId
+          ? withSessionProgress(withSystemMessage(state.session, intro), nextArtifact, state.implementationChecklist, state.lastRunFilesWritten, result)
+          : state.session;
+        const sessions = activeSessionId ? replaceSession(state.sessions, session) : state.sessions;
+        if (activeSessionId) persistSessions(sessions);
 
-      return {
-        busy: false,
-        lastBuild: result,
-        projects,
-        session,
-        sessions,
-        artifact: nextArtifact,
-      };
-    });
+        return {
+          busy: false,
+          lastBuild: result,
+          projects,
+          session,
+          sessions,
+          artifact: nextArtifact,
+        };
+      });
+    } catch (error) {
+      set({ busy: false });
+      get().pushDiagnostic({
+        severity: "error",
+        category: "build",
+        title: "Не удалось подготовить каркас перед запуском реализации",
+        message: summarizeAttemptError(error),
+        source: "implementProject",
+        stack: error instanceof Error ? error.stack : undefined,
+        projectId: get().activeProjectId,
+        sessionId: get().activeSessionId,
+        context: {
+          workspacePath,
+        },
+      });
+      throw error;
+    }
   },
   startAgentImplementation: async () => {
     if (get().busy || !get().activeSessionId) return;
@@ -3193,13 +3643,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { artifact, agents } = get();
     const assignments = planImplementationAssignments(artifact, agents);
     const implementationPlan = renderImplementationPlan(artifact, assignments);
+    const resetImplementationPlanFiles = get().lastRunFilesWritten === undefined;
 
     const runStartedAt = new Date().toISOString();
     set({ busy: true, activeRunMode: "implementation", activeWorkStartedAt: get().activeWorkStartedAt ?? runStartedAt });
     try {
       const result = await buildProject(artifact, true, workspacePath);
-      await writeWorkspaceTextFile(result.rootPath, "IMPLEMENTATION.md", implementationPlan, { overwrite: true });
-      await writeWorkspaceTextFile(result.rootPath, "docs/agent-tasks.md", implementationPlan, { overwrite: true });
+      await writeWorkspaceTextFile(result.rootPath, "IMPLEMENTATION.md", implementationPlan, { overwrite: resetImplementationPlanFiles });
+      await writeWorkspaceTextFile(result.rootPath, "docs/agent-tasks.md", implementationPlan, { overwrite: resetImplementationPlanFiles });
 
       const savedNote = [
         "🚀 Запущен этап реализации агентами. Каркас и Markdown-планы записаны в рабочую папку.",
@@ -3277,6 +3728,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         return;
       }
     } catch (error) {
+      get().pushDiagnostic({
+        severity: "error",
+        category: "build",
+        title: "Не удалось запустить этап реализации агентами",
+        message: summarizeAttemptError(error),
+        source: "startAgentImplementation",
+        stack: error instanceof Error ? error.stack : undefined,
+        projectId: get().activeProjectId,
+        sessionId: get().activeSessionId,
+        context: {
+          workspacePath,
+        },
+      });
       set((state) => {
         const text = "Ошибка запуска реализации: " + (error instanceof Error ? error.message : String(error));
         const session = withSessionProgress(

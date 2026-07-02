@@ -79,9 +79,12 @@ vi.mock("../../workspace", () => ({
     const path = normalizePath(relativePath);
     return { path, content: harness.files.get(path) ?? "", exists: harness.files.has(path) };
   }),
-  writeWorkspaceTextFile: vi.fn(async (_rootPath: string, relativePath: string, content: string) => {
+  writeWorkspaceTextFile: vi.fn(async (_rootPath: string, relativePath: string, content: string, options: { overwrite?: boolean } = {}) => {
     const path = normalizePath(relativePath);
     const existed = harness.files.has(path);
+    if (existed && options.overwrite === false) {
+      return { path, created: false, overwritten: false };
+    }
     harness.files.set(path, content);
     return { path, created: !existed, overwritten: existed };
   }),
@@ -263,6 +266,38 @@ describe("appStore auto implementation integration", () => {
     expect(state.implementationChecklist.every((item) => item.done)).toBe(true);
   });
 
+  it("does not reset agent task progress when continuing implementation rounds", async () => {
+    const { useAppStore } = await import("../appStore");
+    const progress = "# Tasks\n- [x] QA evidence already captured\n";
+    harness.files.set("docs/agent-tasks.md", progress);
+    harness.files.set("IMPLEMENTATION.md", "# Implementation\n- [x] Existing agent progress\n");
+
+    useAppStore.setState((state) => ({
+      agents: state.agents.filter((agent) => agent.id === "coder"),
+      providers: state.providers.map((provider) => provider.id === "RamTeamAi"
+        ? { ...provider, status: "connected" as const, maskedKey: "test-key" }
+        : provider),
+      appSettings: { ...state.appSettings, modelFallbackEnabled: false },
+      workspacePath: "mem://workspace",
+      lastRunFilesWritten: 1,
+      artifact: {
+        ...state.artifact,
+        title: "Continue app",
+        stack: ["React"],
+        steps: ["Update src/App.tsx"],
+        projectTree: "src/App.tsx",
+        status: "scaffolded" as const,
+      },
+      implementationChecklist: [{ id: "step-0", index: 0, step: "Update src/App.tsx", done: false, source: "pending" as const }],
+    }));
+
+    await useAppStore.getState().runTeam("continue", "implementation");
+
+    expect(harness.files.get("docs/agent-tasks.md")).toBe(progress);
+    expect(harness.files.get("IMPLEMENTATION.md")).toContain("Existing agent progress");
+    expect(harness.files.get("src/App.tsx")).toContain("Premium landing shell");
+  });
+
   it("persists the selected session decision artifact and restores it after reload", async () => {
     const { useAppStore } = await import("../appStore");
     const activeSessionId = useAppStore.getState().activeSessionId;
@@ -291,5 +326,35 @@ describe("appStore auto implementation integration", () => {
     expect(restored.artifact.steps).toEqual(["Build the persisted app shell", "Add app-specific QA checks"]);
     expect(restored.artifact.stack).toEqual(["React", "Vitest"]);
     expect(restored.implementationChecklist).toHaveLength(2);
+  });
+
+  it("merges repeated diagnostics into a single journal entry and persists it", async () => {
+    const { useAppStore } = await import("../appStore");
+
+    useAppStore.getState().pushDiagnostic({
+      severity: "error",
+      category: "ai",
+      title: "Agent failed",
+      message: "No file blocks returned",
+      source: "runTeam",
+      context: { agent: "coder" },
+    });
+    useAppStore.getState().pushDiagnostic({
+      severity: "error",
+      category: "ai",
+      title: "Agent failed",
+      message: "No file blocks returned",
+      source: "runTeam",
+      context: { agent: "coder" },
+    });
+
+    const state = useAppStore.getState();
+    expect(state.diagnostics).toHaveLength(1);
+    expect(state.diagnostics[0].count).toBe(2);
+    expect(state.diagnostics[0].context).toEqual({ agent: "coder" });
+
+    const saved = JSON.parse(window.localStorage.getItem("RamTeamAi.diagnostics.v1") ?? "[]") as Array<{ count: number }>;
+    expect(saved).toHaveLength(1);
+    expect(saved[0].count).toBe(2);
   });
 });

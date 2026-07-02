@@ -17,6 +17,7 @@ export default function App() {
   const screen = useAppStore((state) => state.screen);
   const hydrateAccount = useAppStore((state) => state.hydrateAccount);
   const refreshProviderMonitoring = useAppStore((state) => state.refreshProviderMonitoring);
+  const pushDiagnostic = useAppStore((state) => state.pushDiagnostic);
   const healthSupervisorEnabled = useAppStore((state) => state.appSettings.healthSupervisorEnabled);
   const providerHealthIntervalSec = useAppStore((state) => state.appSettings.providerHealthIntervalSec);
 
@@ -31,6 +32,47 @@ export default function App() {
     const timer = window.setInterval(() => refreshProviderMonitoring(), intervalMs);
     return () => window.clearInterval(timer);
   }, [healthSupervisorEnabled, providerHealthIntervalSec, refreshProviderMonitoring]);
+
+  useEffect(() => {
+    const handleWindowError = (event: ErrorEvent) => {
+      pushDiagnostic({
+        severity: "error",
+        category: "runtime",
+        title: "Глобальная ошибка интерфейса",
+        message: event.message || "Unhandled window error",
+        source: "window.error",
+        stack: event.error instanceof Error ? event.error.stack : undefined,
+        context: {
+          screen,
+          file: event.filename,
+          line: event.lineno,
+          column: event.colno,
+        },
+      });
+    };
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      pushDiagnostic({
+        severity: "error",
+        category: "runtime",
+        title: "Необработанное отклонение Promise",
+        message: reason instanceof Error ? reason.message : String(reason),
+        source: "window.unhandledrejection",
+        stack: reason instanceof Error ? reason.stack : undefined,
+        context: {
+          screen,
+        },
+      });
+    };
+
+    window.addEventListener("error", handleWindowError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+    return () => {
+      window.removeEventListener("error", handleWindowError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+    };
+  }, [pushDiagnostic, screen]);
 
   return (
     <FRamTeamAie>
