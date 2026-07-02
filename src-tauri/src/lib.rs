@@ -141,6 +141,16 @@ fn list_workspace_files(root_path: String) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+fn write_text_file_to_path(path: String, content: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("File path is empty".to_string());
+    }
+
+    std::fs::write(trimmed, content).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn append_history(state: State<'_, AppState>, session_id: String, message: ChatMessage) -> Result<(), String> {
     state.storage.append_message(&session_id, &message).map_err(|error| error.to_string())
 }
@@ -200,6 +210,7 @@ pub fn run() {
             write_workspace_file,
             read_workspace_file,
             list_workspace_files,
+            write_text_file_to_path,
             append_history,
             load_history,
             github_begin_device_flow,

@@ -9,9 +9,9 @@ const ctxLocal = { streaming: true, toolUse: false, vision: false, maxContext: 1
 export const providersSeed: ProviderConfig[] = [
   {
     id: "RamTeamAi",
-    name: "Neurogate",
+    name: "Vibemod",
     kind: "RamTeamAi",
-    baseUrl: "https://api.neurogate.space/v1",
+    baseUrl: "https://r-api.vibemod.pro/v1",
     auth: "bearer",
     stream: "sse",
     status: "not-configured",

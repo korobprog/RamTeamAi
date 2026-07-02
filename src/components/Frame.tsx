@@ -16,7 +16,7 @@ const nav: Array<{ id: ScreenId; label: string }> = [
   { id: "providers", label: "Провайдеры" },
   { id: "custom-api", label: "Кастомный API" },
   { id: "mcp", label: "MCP" },
-  { id: "agent-builder", label: "Агент" },
+  { id: "agent-builder", label: "Агенты" },
   { id: "topology", label: "Топология" },
   { id: "chat", label: "Диалог" },
   { id: "build", label: "Решение" },
@@ -30,9 +30,22 @@ export function FRamTeamAie({ children }: { children: ReactNode }) {
   const account = useAppStore((state) => state.account);
   const theme = useAppStore((state) => state.appSettings.theme);
   const setAppSettings = useAppStore((state) => state.setAppSettings);
+  const diagnostics = useAppStore((state) => state.diagnostics);
   const profileName = account.github?.name || account.github?.login || "Профиль";
   const profileSubtitle = account.github ? "GitHub @" + account.github.login : "локальный пользователь";
   const nextTheme = themeOrder[(themeOrder.indexOf(theme) + 1) % themeOrder.length];
+  const criticalDiagnostics = diagnostics.filter((entry) => entry.severity === "error").length;
+
+  function openSettingsSection(hash: "#diagnostics" | "#donations", elementId: string) {
+    window.location.hash = hash;
+    setScreen("settings");
+
+    if (screen === "settings") {
+      window.requestAnimationFrame(() => {
+        document.getElementById(elementId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  }
 
   return (
     <main className="app-shell">
@@ -45,6 +58,16 @@ export function FRamTeamAie({ children }: { children: ReactNode }) {
                 <b>{profileName}</b>
                 <small>{profileSubtitle}</small>
               </span>
+            </button>
+            <button
+              className={criticalDiagnostics ? "settings-button diagnostics-button has-issues" : "settings-button diagnostics-button"}
+              type="button"
+              aria-label="Открыть журнал ошибок и диагностики"
+              title={criticalDiagnostics ? `Открыть журнал ошибок (${criticalDiagnostics})` : "Открыть журнал диагностики"}
+              onClick={() => openSettingsSection("#diagnostics", "diagnostics-panel")}
+            >
+              <i className="ti ti-bug" aria-hidden="true" />
+              {criticalDiagnostics ? <span className="settings-badge">{criticalDiagnostics > 99 ? "99+" : criticalDiagnostics}</span> : null}
             </button>
             <button
               className={screen === "settings" ? "settings-button active" : "settings-button"}
@@ -76,10 +99,7 @@ export function FRamTeamAie({ children }: { children: ReactNode }) {
               type="button"
               aria-label="Открыть донаты и кошельки"
               title="Донат и кошельки"
-              onClick={() => {
-                window.location.hash = "donations";
-                setScreen("settings");
-              }}
+              onClick={() => openSettingsSection("#donations", "donation-panel")}
             >
               <i className="ti ti-heart-handshake" aria-hidden="true" />
               <span>Донат</span>

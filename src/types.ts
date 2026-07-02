@@ -10,6 +10,29 @@ export type ScreenId =
   | "workbench"
   | "settings";
 
+export type DiagnosticSeverity = "info" | "warning" | "error";
+export type DiagnosticCategory = "runtime" | "ai" | "provider" | "mcp" | "workspace" | "sync" | "build";
+
+export interface DiagnosticEntry {
+  id: string;
+  fingerprint: string;
+  createdAt: string;
+  updatedAt: string;
+  severity: DiagnosticSeverity;
+  category: DiagnosticCategory;
+  title: string;
+  message: string;
+  source?: string;
+  details?: string;
+  stack?: string;
+  context?: Record<string, string>;
+  agentId?: string;
+  providerId?: string;
+  sessionId?: string;
+  projectId?: string;
+  count: number;
+}
+
 export type ProviderKind = "anthropic" | "openai" | "gemini" | "ollama" | "RamTeamAi" | "custom";
 export type ModelApiFormat = "chat-completions" | "anthropic" | "responses";
 export type AuthKind = "bearer" | "header" | "query" | "none";

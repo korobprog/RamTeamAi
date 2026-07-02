@@ -2,11 +2,24 @@ import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Chip, SectionTitle } from "../components/FRamTeamAie";
 import { GithubAvatar } from "../components/GithubAvatar";
+import {
+  buildDiagnosticIssueUrl,
+  buildDiagnosticReport,
+  diagnosticCategoryFilters,
+  diagnosticCategoryLabel,
+  diagnosticLabel,
+  diagnosticSeverityFilters,
+  diagnosticSeverityLabel,
+  formatDiagnosticTimestamp,
+  type DiagnosticCategoryFilter,
+  type DiagnosticSeverityFilter,
+} from "../diagnostics/reporting";
+import { exportTextFile } from "../lib/fileExport";
 import { describeMcpHealth, listAvailableTools } from "../mcp/manager";
 import { useAppStore } from "../store/appStore";
 import { APP_GITHUB_URL, APP_VERSION } from "../config/appMeta";
 import { donationMethods, type DonationMethod } from "../config/donationWallets";
-import type { ScreenId, ThemePreference } from "../types";
+import type { DiagnosticEntry, ScreenId, ThemePreference } from "../types";
 
 const themeOptions: Array<{ id: ThemePreference; label: string; icon: string; hint: string }> = [
   { id: "system", label: "Системная", icon: "device-desktop", hint: "как в ОС" },
@@ -23,6 +36,12 @@ type SettingsCard = {
   meta: string;
   screen: ScreenId;
   tone?: "default" | "info" | "success" | "warning";
+};
+
+const diagnosticTone: Record<DiagnosticEntry["severity"], "info" | "warning" | "success"> = {
+  info: "info",
+  warning: "warning",
+  error: "warning",
 };
 
 function pluralRu(count: number, one: string, few: string, many: string): string {
@@ -57,9 +76,12 @@ async function writeClipboardText(value: string): Promise<void> {
   if (!copied) throw new Error("Clipboard copy failed");
 }
 
+
 export function SettingsScreen() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copyErrorId, setCopyErrorId] = useState<string | null>(null);
+  const [diagnosticCategoryFilter, setDiagnosticCategoryFilter] = useState<DiagnosticCategoryFilter>("all");
+  const [diagnosticSeverityFilter, setDiagnosticSeverityFilter] = useState<DiagnosticSeverityFilter>("all");
   const [repoOwner, setRepoOwner] = useState("");
   const [repoName, setRepoName] = useState("");
   const [repoBranch, setRepoBranch] = useState("main");
@@ -83,6 +105,9 @@ export function SettingsScreen() {
   const sessions = useAppStore((state) => state.sessions);
   const activeProjectId = useAppStore((state) => state.activeProjectId);
   const busy = useAppStore((state) => state.busy);
+  const diagnostics = useAppStore((state) => state.diagnostics);
+  const clearDiagnostics = useAppStore((state) => state.clearDiagnostics);
+  const removeDiagnostic = useAppStore((state) => state.removeDiagnostic);
 
   const connectedProviders = providers.filter((provider) => provider.status === "connected").length;
   const activeMcpServers = mcpServers.filter((server) => server.enabled).length;
@@ -100,6 +125,14 @@ export function SettingsScreen() {
     : account.sync.status;
   const accountStatusTone = account.github ? "success" : account.sync.status === "error" ? "warning" : "info";
   const cloudSyncUnavailable = Boolean(account.github && !account.firebaseUid);
+  const errorDiagnosticsCount = diagnostics.filter((entry) => entry.severity === "error").length;
+  const aiDiagnosticsCount = diagnostics.filter((entry) => entry.category === "ai").length;
+  const runtimeDiagnosticsCount = diagnostics.filter((entry) => entry.category === "runtime").length;
+  const filteredDiagnostics = diagnostics.filter((entry) => (
+    (diagnosticCategoryFilter === "all" || entry.category === diagnosticCategoryFilter)
+    && (diagnosticSeverityFilter === "all" || entry.severity === diagnosticSeverityFilter)
+  ));
+  const hasDiagnosticFilters = diagnosticCategoryFilter !== "all" || diagnosticSeverityFilter !== "all";
 
 
   const settingsCards: SettingsCard[] = [
@@ -193,15 +226,77 @@ export function SettingsScreen() {
     setRepoBranch("main");
   }
 
+  function markActionSuccess(actionId: string) {
+    setCopiedId(actionId);
+    setCopyErrorId(null);
+    window.setTimeout(() => setCopiedId((current) => current === actionId ? null : current), 1800);
+  }
+
+  function markActionError(actionId: string) {
+    setCopyErrorId(actionId);
+    window.setTimeout(() => setCopyErrorId((current) => current === actionId ? null : current), 2200);
+  }
+
+  async function copyDiagnosticReport(entries: DiagnosticEntry[] = filteredDiagnostics) {
+    try {
+      await writeClipboardText(buildDiagnosticReport(entries, "text"));
+      markActionSuccess("diagnostics-report");
+    } catch {
+      markActionError("diagnostics-report");
+    }
+  }
+
+  async function exportDiagnostics(extension: "txt" | "md") {
+    const actionId = `diagnostics-export-${extension}`;
+    try {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const content = buildDiagnosticReport(filteredDiagnostics, extension === "md" ? "markdown" : "text");
+      const fileName = `RamTeamAi-diagnostics-${timestamp}`;
+      const savedPath = await exportTextFile(fileName, content, extension);
+      if (!savedPath) return;
+      markActionSuccess(actionId);
+    } catch {
+      markActionError(actionId);
+    }
+  }
+
+  async function createDiagnosticIssueReport() {
+    const actionId = "diagnostics-issue";
+    const issueUrl = buildDiagnosticIssueUrl(filteredDiagnostics);
+
+    try {
+      await writeClipboardText(buildDiagnosticReport(filteredDiagnostics, "markdown"));
+    } catch {
+      // The GitHub issue still includes a preview, so opening it remains useful.
+    }
+
+    try {
+      await openUrl(issueUrl);
+      markActionSuccess(actionId);
+    } catch {
+      const issueWindow = window.open(issueUrl, "_blank", "noopener,noreferrer");
+      if (issueWindow) {
+        markActionSuccess(actionId);
+        return;
+      }
+      markActionError(actionId);
+    }
+  }
+
   useEffect(() => {
     if (screen !== "settings") return;
-    if (window.location.hash !== "#donations") return;
-    const node = document.getElementById("donation-panel");
+    const hashTargets: Record<string, string> = {
+      "#donations": "donation-panel",
+      "#diagnostics": "diagnostics-panel",
+    };
+    const targetId = hashTargets[window.location.hash];
+    if (!targetId) return;
+    const node = document.getElementById(targetId);
     if (!node) return;
     window.requestAnimationFrame(() => {
       node.scrollIntoView({ behavior: "smooth", block: "start" });
     });
-  }, [screen]);
+  }, [screen, diagnostics.length]);
 
   return (
     <div className="screen-stack settings-screen">
@@ -438,6 +533,126 @@ export function SettingsScreen() {
             </button>
           ))}
         </div>
+      </section>
+
+      <section className="settings-section diagnostics-panel" id="diagnostics-panel">
+        <div className="settings-section-head">
+          <div>
+            <h3>Diagnostics journal</h3>
+            <p>AI logic errors, provider/MCP failures, workspace write problems, and runtime exceptions are collected here for quick debugging.</p>
+          </div>
+          <div className="chip-row">
+            <Chip tone={diagnostics.length ? "warning" : "success"}>{diagnostics.length ? `${diagnostics.length} entries` : "empty"}</Chip>
+            <Chip tone={errorDiagnosticsCount ? "warning" : "success"}>{errorDiagnosticsCount} critical</Chip>
+            <Chip tone={aiDiagnosticsCount ? "warning" : "info"}>{aiDiagnosticsCount} AI</Chip>
+            <Chip tone={runtimeDiagnosticsCount ? "warning" : "info"}>{runtimeDiagnosticsCount} runtime</Chip>
+          </div>
+        </div>
+        <div className="diagnostics-filters">
+          {diagnosticCategoryFilters.map((filter) => (
+            <button
+              key={filter}
+              className={diagnosticCategoryFilter === filter ? "chip-button on" : "chip-button"}
+              type="button"
+              onClick={() => setDiagnosticCategoryFilter(filter)}
+            >
+              {diagnosticCategoryLabel[filter]}
+            </button>
+          ))}
+        </div>
+        <div className="diagnostics-filters">
+          {diagnosticSeverityFilters.map((filter) => (
+            <button
+              key={filter}
+              className={diagnosticSeverityFilter === filter ? "chip-button on" : "chip-button"}
+              type="button"
+              onClick={() => setDiagnosticSeverityFilter(filter)}
+            >
+              {diagnosticSeverityLabel[filter]}
+            </button>
+          ))}
+        </div>
+        <div className="diagnostics-summary">
+          <span>
+            Showing <b>{filteredDiagnostics.length}</b> of <b>{diagnostics.length}</b> entries
+          </span>
+          {hasDiagnosticFilters ? (
+            <button
+              className="chip-button"
+              type="button"
+              onClick={() => {
+                setDiagnosticCategoryFilter("all");
+                setDiagnosticSeverityFilter("all");
+              }}
+            >
+              <i className="ti ti-filter-off" aria-hidden="true" /> Reset filters
+            </button>
+          ) : null}
+        </div>
+        <div className="diagnostics-actions">
+          <button className="chip-button on" type="button" disabled={!filteredDiagnostics.length} onClick={() => void copyDiagnosticReport()}>
+            <i className="ti ti-copy" aria-hidden="true" /> {copiedId === "diagnostics-report" ? "Report copied" : copyErrorId === "diagnostics-report" ? "Copy failed" : "Copy report"}
+          </button>
+          <button type="button" disabled={!filteredDiagnostics.length} onClick={() => void exportDiagnostics("txt")}>
+            <i className="ti ti-file-text" aria-hidden="true" /> {copiedId === "diagnostics-export-txt" ? "TXT saved" : copyErrorId === "diagnostics-export-txt" ? "TXT failed" : "Export .txt"}
+          </button>
+          <button type="button" disabled={!filteredDiagnostics.length} onClick={() => void exportDiagnostics("md")}>
+            <i className="ti ti-file-description" aria-hidden="true" /> {copiedId === "diagnostics-export-md" ? "MD saved" : copyErrorId === "diagnostics-export-md" ? "MD failed" : "Export .md"}
+          </button>
+          <button type="button" disabled={!filteredDiagnostics.length} onClick={() => void createDiagnosticIssueReport()}>
+            <i className="ti ti-brand-github" aria-hidden="true" /> {copiedId === "diagnostics-issue" ? "Issue opened" : copyErrorId === "diagnostics-issue" ? "Open failed" : "Create issue/report"}
+          </button>
+          <button type="button" disabled={!diagnostics.length} onClick={() => clearDiagnostics()}>
+            <i className="ti ti-trash" aria-hidden="true" /> Clear journal
+          </button>
+        </div>
+        {filteredDiagnostics.length ? (
+          <div className="diagnostics-list">
+            {filteredDiagnostics.map((entry) => (
+              <article className={"diagnostic-card severity-" + entry.severity} key={entry.id}>
+                <div className="diagnostic-card-head">
+                  <div>
+                    <div className="diagnostic-title-row">
+                      <Chip tone={diagnosticTone[entry.severity]}>{entry.severity.toUpperCase()}</Chip>
+                      <Chip tone="info">{diagnosticLabel[entry.category]}</Chip>
+                      {entry.count > 1 ? <Chip tone="warning">x{entry.count}</Chip> : null}
+                    </div>
+                    <h4>{entry.title}</h4>
+                    <small>{formatDiagnosticTimestamp(entry.updatedAt)}{entry.source ? ` | ${entry.source}` : ""}</small>
+                  </div>
+                  <button className="mini-action ghosty" type="button" title="Remove entry" onClick={() => removeDiagnostic(entry.id)}>
+                    <i className="ti ti-x" aria-hidden="true" />
+                  </button>
+                </div>
+                <p className="diagnostic-message">{entry.message}</p>
+                {entry.context && Object.keys(entry.context).length ? (
+                  <div className="diagnostic-context">
+                    {Object.entries(entry.context).map(([key, value]) => (
+                      <span key={key}><b>{key}:</b> {value}</span>
+                    ))}
+                  </div>
+                ) : null}
+                {entry.details ? <pre className="diagnostic-pre">{entry.details}</pre> : null}
+                {entry.stack ? (
+                  <details className="diagnostic-stack">
+                    <summary>Stack trace</summary>
+                    <pre className="diagnostic-pre">{entry.stack}</pre>
+                  </details>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        ) : diagnostics.length ? (
+          <div className="diagnostics-empty">
+            <b>No entries match the current filters.</b>
+            <p>Reset the filters or choose another error type to inspect the saved journal.</p>
+          </div>
+        ) : (
+          <div className="diagnostics-empty">
+            <b>Journal is empty.</b>
+            <p>When the app, agents, or integrations hit a problem, a diagnostic entry will appear here automatically.</p>
+          </div>
+        )}
       </section>
 
       <section className="settings-section donation-panel" id="donation-panel">
